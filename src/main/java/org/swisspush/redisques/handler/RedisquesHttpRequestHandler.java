@@ -208,7 +208,13 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
             try {
                 String strBuffer = encodePayload(buffer.toString());
                 eventBus.send(redisquesAddress, buildEnqueueOrLockedEnqueueOperation(queue, strBuffer, ctx.request()),
-                        (Handler<AsyncResult<Message<JsonObject>>>) reply -> checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST));
+                        (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                            if( reply.failed() /*&& log.isWarnEnabled()*/ ){
+                                log.warn( "Received failed message for enqueueOrLockedEnqueue. _err_20180907150254_." , reply.cause() );
+                            }
+                            // TODO: Makes it any sense to call this in case of an error? or should we place it in else branch?
+                            checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST);
+                        });
             } catch (Exception ex) {
                 respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), ctx.request());
             }
@@ -226,6 +232,10 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private void getAllLocks(RoutingContext ctx) {
         String filter = ctx.request().params().get(FILTER);
         eventBus.send(redisquesAddress, buildGetAllLocksOperation(Optional.ofNullable(filter)), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+            if( reply.failed() ){
+                log.warn( "Received failed message for getAllLocksOperation. _err_20180907150732_." , reply.cause() );
+                // TODO: Is there any sense to continue with below code?
+            }
             if (OK.equals(reply.result().body().getString(STATUS))) {
                 jsonResponse(ctx.response(), reply.result().body().getJsonObject(VALUE));
             } else {
@@ -246,12 +256,22 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private void addLock(RoutingContext ctx) {
         String queue = lastPart(ctx.request().path());
         eventBus.send(redisquesAddress, buildPutLockOperation(queue, extractUser(ctx.request())),
-                (Handler<AsyncResult<Message<JsonObject>>>) reply -> checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST));
+                (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                    if( reply.failed() ){
+                        log.warn( "Received failed message for addLockOperation. _err_20180907151122_." , reply.cause() );
+                        // TODO: Is there any sense to continue with below code?
+                    }
+                    checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST);
+                });
     }
 
     private void getSingleLock(RoutingContext ctx) {
         String queue = lastPart(ctx.request().path());
         eventBus.send(redisquesAddress, buildGetLockOperation(queue), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+            if( reply.failed() ){
+                log.warn( "Received failed message for getSingleLockOperation. _err_20180907151405_." , reply.cause() );
+                // TODO: Is there any sense to continue with below code?
+            }
             if (OK.equals(reply.result().body().getString(STATUS))) {
                 ctx.response().putHeader(CONTENT_TYPE, APPLICATION_JSON);
                 ctx.response().end(reply.result().body().getString(VALUE));
@@ -266,7 +286,13 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private void deleteSingleLock(RoutingContext ctx) {
         String queue = lastPart(ctx.request().path());
         eventBus.send(redisquesAddress, buildDeleteLockOperation(queue),
-                (Handler<AsyncResult<Message<JsonObject>>>) reply -> checkReply(reply.result(), ctx.request(), StatusCode.INTERNAL_SERVER_ERROR));
+                (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                    if( reply.failed() ){
+                        log.warn( "Received failed message for deleteSingleLockOperation. _err_20180907151600_." , reply.cause() );
+                        // TODO: Is there any sense to continue with below code?
+                    }
+                    checkReply(reply.result(), ctx.request(), StatusCode.INTERNAL_SERVER_ERROR);
+                });
     }
 
     private void deleteAllLocks(RoutingContext ctx) {
@@ -465,6 +491,10 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
             limitParam = ctx.request().params().get(LIMIT);
         }
         eventBus.send(redisquesAddress, buildGetQueueItemsOperation(queue, limitParam), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+            if( reply.failed() ){
+                log.warn( "Received failed message for listQueueItemsOperation. _err_20180907151714_." , reply.cause() );
+                // TODO: Is there any sense to continue with below code?
+            }
             JsonObject replyBody = reply.result().body();
             if (OK.equals(replyBody.getString(STATUS))) {
                 List<Object> list = reply.result().body().getJsonArray(VALUE).getList();
@@ -488,7 +518,13 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
             try {
                 String strBuffer = encodePayload(buffer.toString());
                 eventBus.send(redisquesAddress, buildAddQueueItemOperation(queue, strBuffer),
-                        (Handler<AsyncResult<Message<JsonObject>>>) reply -> checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST));
+                        (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                            if( reply.failed() ){
+                                log.warn( "Received failed message for addQueueItemOperation. _err_20180907151828_." , reply.cause() );
+                                // TODO: Is there any sense to continue with below code?
+                            }
+                            checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST);
+                        });
             } catch (Exception ex) {
                 respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), ctx.request());
             }
@@ -499,6 +535,10 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         final String queue = lastPart(ctx.request().path().substring(0, ctx.request().path().length() - 2));
         final int index = Integer.parseInt(lastPart(ctx.request().path()));
         eventBus.send(redisquesAddress, buildGetQueueItemOperation(queue, index), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+            if( reply.failed() ){
+                log.warn( "Received failed message for getSingleQueueItemOperation. _err_20180907152124_." , reply.cause() );
+                // TODO: Is there any sense to continue with below code?
+            }
             JsonObject replyBody = reply.result().body();
             if (OK.equals(replyBody.getString(STATUS))) {
                 ctx.response().putHeader(CONTENT_TYPE, APPLICATION_JSON);
@@ -519,7 +559,13 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
                 try {
                     String strBuffer = encodePayload(buffer.toString());
                     eventBus.send(redisquesAddress, buildReplaceQueueItemOperation(queue, index, strBuffer),
-                            (Handler<AsyncResult<Message<JsonObject>>>) reply -> checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND));
+                            (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                                if( reply.failed() ){
+                                    log.warn( "Received failed message for replaceSingleQueueItemOperation. _err_20180907152220_." , reply.cause() );
+                                    // TODO: Is there any sense to continue with below code?
+                                }
+                                checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND);
+                            });
                 } catch (Exception ex) {
                     respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), ctx.request());
                 }
@@ -531,13 +577,25 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         final String queue = part(ctx.request().path(), 2);
         final int index = Integer.parseInt(lastPart(ctx.request().path()));
         checkLocked(queue, ctx.request(), aVoid -> eventBus.send(redisquesAddress, buildDeleteQueueItemOperation(queue, index),
-                (Handler<AsyncResult<Message<JsonObject>>>) reply -> checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND)));
+                (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                    if( reply.failed() ){
+                        log.warn( "Received failed message for deleteQueueItemOperation. _err_20180907153350_." , reply.cause() );
+                        // TODO: Is there any sense to continue with below code?
+                    }
+                    checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND);
+                }));
     }
 
     private void deleteAllQueueItems(RoutingContext ctx) {
         boolean unlock = evaluateUrlParameterToBeEmptyOrTrue(UNLOCK_PARAM, ctx.request());
         final String queue = lastPart(ctx.request().path());
-        eventBus.send(redisquesAddress, buildDeleteAllQueueItemsOperation(queue, unlock), reply -> ctx.response().end());
+        eventBus.send(redisquesAddress, buildDeleteAllQueueItemsOperation(queue, unlock), reply -> {
+            if( reply.failed() ){
+                log.warn( "Received failed message for deleteAllQueueItemsOperation. _err_20180907153615_." , reply.cause() );
+                // TODO: Should we respond to 'ctx.response()' with an error instead?
+            }
+            ctx.response().end();
+        });
     }
 
     private void bulkDeleteQueues(RoutingContext ctx) {
@@ -614,15 +672,19 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private void checkLocked(String queue, final HttpServerRequest request, final Handler<Void> handler) {
         request.pause();
         eventBus.send(redisquesAddress, buildGetLockOperation(queue), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+            if( reply.failed() ){
+                log.warn( "Received failed message for checkLockedOperation. _err_20180907153651_." , reply.cause() );
+                // TODO: Is there any sense to continue with below code?
+            }
             if (NO_SUCH_LOCK.equals(reply.result().body().getString(STATUS))) {
                 request.resume();
                 request.response().setStatusCode(StatusCode.CONFLICT.getStatusCode());
                 request.response().setStatusMessage("Queue must be locked to perform this operation");
                 request.response().end("Queue must be locked to perform this operation");
             } else {
-                handler.handle(null);
                 request.resume();
             }
+            handler.handle(null);
         });
     }
 

@@ -124,6 +124,10 @@ public class RedisQues extends AbstractVerticle {
     // for a queue.
     private Handler<Message<String>> registrationRequestHandler = event -> {
         final String queue = event.body();
+        if( queue == null ){
+            log.warn( "Got message with empty body! _err_20180907162408_." );
+            // TODO: Is there any sense to continue with below code?
+        }
         log.debug("RedisQues Got registration request for queue " + queue + " from consumer: " + uid);
         // Try to register for this queue
         SetOptions setOptions = new SetOptions().setNX(true).setEX(consumerLockTime);
@@ -234,6 +238,7 @@ public class RedisQues extends AbstractVerticle {
                     break;
                 case bulkDeleteQueues:
                     bulkDeleteQueues(event);
+                    // TODO: Explain why we've to fall through here.
                 case getAllLocks:
                     getAllLocks(event);
                     break;
@@ -382,6 +387,7 @@ public class RedisQues extends AbstractVerticle {
                 redisClient.lrange(keyListRange, 0, maxQueueItemCountIndex, new GetQueueItemsHandler(event, queueItemCount));
             } else {
                 log.warn("RedisQues getQueueItems failed", countReply.cause());
+                event.reply(new JsonObject().put(STATUS, ERROR));
             }
         });
     }
@@ -994,6 +1000,8 @@ public class RedisQues extends AbstractVerticle {
         timer.executeDelayedMax(processorDelayMax).setHandler(delayed -> {
             if (delayed.failed()) {
                 log.error("Delayed execution has failed. Cause: " + delayed.cause().getMessage());
+                final SendResult event = new SendResult(false, null);
+                handler.handle(event);
                 return;
             }
             final EventBus eb = vertx.eventBus();
