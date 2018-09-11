@@ -245,7 +245,7 @@ public class RedisQues extends AbstractVerticle {
                     break;
                 case bulkDeleteQueues:
                     bulkDeleteQueues(event);
-                    break;
+                    // TODO: Explain why we've to fall through here.
                 case getAllLocks:
                     getAllLocks(event);
                     break;
