@@ -245,7 +245,7 @@ public class RedisQues extends AbstractVerticle {
                     break;
                 case bulkDeleteQueues:
                     bulkDeleteQueues(event);
-                    // TODO: Explain why we've to fall through here.
+                    break;
                 case getAllLocks:
                     getAllLocks(event);
                     break;
@@ -479,7 +479,7 @@ public class RedisQues extends AbstractVerticle {
         redisClient.del(buildQueueKey(queue), deleteReply -> {
             if( deleteReply.failed() ){
                 log.warn( "Failed to deleteAllQueueItems.", deleteReply.cause() );
-                // TODO: Is there any sense to continue with code below?
+                // TODO: Is there any reason to continue with code below?
             }
             if (unlock) {
                 redisClient.hdel(getLocksKey(), queue, unlockReply -> {
@@ -831,7 +831,7 @@ public class RedisQues extends AbstractVerticle {
                     redisClient.get(consumerKey, event1 -> {
                         if( event1.failed() ){
                             log.error( "Failed to retrieve consumer '{}'.", consumerKey, event1.cause() );
-                            return; // No sense to continue below. It wouldn't do anything useful anyway.
+                            return; // No reason to continue below. It wouldn't do anything useful anyway.
                         }
                         String consumer = event1.result();
                         if (log.isTraceEnabled()) {
