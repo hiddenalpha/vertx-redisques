@@ -213,7 +213,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
                             if( reply.failed() /*&& log.isWarnEnabled()*/ ){
                                 log.warn( "Received failed message for enqueueOrLockedEnqueue. _err_20180907150254_." , reply.cause() );
                             }
-                            // TODO: Makes it any sense to call this in case of an error? or should we place it in else branch?
+                            // TODO: Is there any reason to call this in case of an error? or should we place it in else branch?
                             checkReply(reply.result(), ctx.request(), StatusCode.BAD_REQUEST);
                         });
             } catch (Exception ex) {
