@@ -1,6 +1,7 @@
 package org.swisspush.redisques.handler;
 
 import io.vertx.core.AsyncResult;
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -553,37 +554,55 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
 
     private void replaceSingleQueueItem(RoutingContext ctx) {
         final String queue = part(ctx.request().path(), 2);
-        checkLocked(queue, ctx.request(), aVoid -> {
-            final int index = Integer.parseInt(lastPart(ctx.request().path()));
-            ctx.request().bodyHandler(buffer -> {
-                try {
-                    String strBuffer = encodePayload(buffer.toString());
-                    eventBus.send(redisquesAddress, buildReplaceQueueItemOperation(queue, index, strBuffer),
-                            (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
-                                if( reply.failed() ){
-                                    log.warn( "Received failed message for replaceSingleQueueItemOperation. _err_20180907152220_." , reply.cause() );
-                                    // TODO: Is there any sense to continue with below code?
-                                }
-                                checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND);
-                            });
-                } catch (Exception ex) {
-                    respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), ctx.request());
-                }
-            });
+        checkLocked(queue, ctx.request(), event -> {
+            if( event.failed() ){
+                log.error( "Failed to query if queue '{}' is locked" , queue , event.cause() );
+                respondWith( StatusCode.INTERNAL_SERVER_ERROR , ctx.request() );
+            }else if( !event.result() ){
+                respondWithQueueMustBeLocked( ctx.response() );
+            }else{
+                final int index = Integer.parseInt(lastPart(ctx.request().path()));
+                ctx.request().bodyHandler(buffer -> {
+                    try {
+                        String strBuffer = encodePayload(buffer.toString());
+                        eventBus.send(redisquesAddress, buildReplaceQueueItemOperation(queue, index, strBuffer),
+                                (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                                    if( reply.failed() ){
+                                        log.warn( "Received failed message for replaceSingleQueueItemOperation. _err_20180907152220_." , reply.cause() );
+                                        // TODO: Is there any sense to continue with below code?
+                                    }
+                                    checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND);
+                                });
+                    } catch (Exception ex) {
+                        respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), ctx.request());
+                    }
+                });
+            }
         });
     }
 
     private void deleteQueueItem(RoutingContext ctx) {
         final String queue = part(ctx.request().path(), 2);
         final int index = Integer.parseInt(lastPart(ctx.request().path()));
-        checkLocked(queue, ctx.request(), aVoid -> eventBus.send(redisquesAddress, buildDeleteQueueItemOperation(queue, index),
-                (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
-                    if( reply.failed() ){
-                        log.warn( "Received failed message for deleteQueueItemOperation. _err_20180907153350_." , reply.cause() );
-                        // TODO: Is there any sense to continue with below code?
-                    }
-                    checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND);
-                }));
+        checkLocked(queue, ctx.request(), event -> {
+            if( event.failed() ){
+                log.error( "Failed to query if queue '{}' is locked" , queue , event.cause() );
+                respondWith( StatusCode.INTERNAL_SERVER_ERROR , ctx.request() );
+            }else if( !event.result() ){
+                // Queue not locked
+                respondWithQueueMustBeLocked( ctx.response() );
+            }else{
+                // Queue is locked. Go on.
+                eventBus.send(redisquesAddress, buildDeleteQueueItemOperation(queue, index),
+                        (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                            if( reply.failed() ){
+                                log.warn( "Received failed message for deleteQueueItemOperation. _err_20180907153350_." , reply.cause() );
+                                // TODO: Is there any sense to continue with below code?
+                            }
+                            checkReply(reply.result(), ctx.request(), StatusCode.NOT_FOUND);
+                        });
+            }
+        });
     }
 
     private void deleteAllQueueItems(RoutingContext ctx) {
@@ -669,23 +688,24 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         return user;
     }
 
-    private void checkLocked(String queue, final HttpServerRequest request, final Handler<Void> handler) {
+    private void checkLocked(String queue, final HttpServerRequest request, final Handler<AsyncResult<Boolean>> handler) {
         request.pause();
         eventBus.send(redisquesAddress, buildGetLockOperation(queue), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+            request.resume();
             if( reply.failed() ){
-                log.warn( "Received failed message for checkLockedOperation. _err_20180907153651_." , reply.cause() );
-                // TODO: Is there any sense to continue with below code?
+                handler.handle(Future.failedFuture( reply.cause() ));
+            }else if( NO_SUCH_LOCK.equals(reply.result().body().getString(STATUS)) ){
+                handler.handle(Future.succeededFuture( false ));
+            }else{
+                handler.handle(Future.succeededFuture( true ));
             }
-            if (NO_SUCH_LOCK.equals(reply.result().body().getString(STATUS))) {
-                request.resume();
-                request.response().setStatusCode(StatusCode.CONFLICT.getStatusCode());
-                request.response().setStatusMessage("Queue must be locked to perform this operation");
-                request.response().end("Queue must be locked to perform this operation");
-            } else {
-                request.resume();
-            }
-            handler.handle(null);
         });
+    }
+
+    private void respondWithQueueMustBeLocked(HttpServerResponse response ){
+        response.setStatusCode(StatusCode.CONFLICT.getStatusCode());
+        response.setStatusMessage("Queue must be locked to perform this operation");
+        response.end("Queue must be locked to perform this operation");
     }
 
     private void checkReply(Message<JsonObject> reply, HttpServerRequest request, StatusCode statusCode) {
