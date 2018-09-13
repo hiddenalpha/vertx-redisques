@@ -124,6 +124,10 @@ public class RedisQues extends AbstractVerticle {
     // for a queue.
     private Handler<Message<String>> registrationRequestHandler = event -> {
         final String queue = event.body();
+        if( queue == null ){
+            log.warn( "Got message with empty body! _err_20180907162408_." );
+            // TODO: Is there any sense to continue with below code?
+        }
         log.debug("RedisQues Got registration request for queue " + queue + " from consumer: " + uid);
         // Try to register for this queue
         SetOptions setOptions = new SetOptions().setNX(true).setEX(consumerLockTime);
@@ -196,7 +200,14 @@ public class RedisQues extends AbstractVerticle {
 
         // Handles operations
         eb.localConsumer(address, (Handler<Message<JsonObject>>) event -> {
-            String operation = event.body().getString(OPERATION);
+            final JsonObject body = event.body();
+            if (null == body) {
+                log.error("Got msg with empty body from ev bus! address={}  replyAddress={} ", event.address(), event.replyAddress());
+                // There is no sense to continue below. We would run directly into
+                // NullPointerException anyway.
+                return;
+            }
+            String operation = body.getString(OPERATION);
             if (log.isTraceEnabled()) {
                 log.trace("RedisQues got operation:" + operation);
             }
@@ -234,6 +245,7 @@ public class RedisQues extends AbstractVerticle {
                     break;
                 case bulkDeleteQueues:
                     bulkDeleteQueues(event);
+                    // TODO: Explain why we've to fall through here.
                 case getAllLocks:
                     getAllLocks(event);
                     break;
@@ -244,7 +256,7 @@ public class RedisQues extends AbstractVerticle {
                     bulkPutLocks(event);
                     break;
                 case getLock:
-                    redisClient.hget(getLocksKey(), event.body().getJsonObject(PAYLOAD).getString(QUEUENAME), new GetLockHandler(event));
+                    redisClient.hget(getLocksKey(), body.getJsonObject(PAYLOAD).getString(QUEUENAME), new GetLockHandler(event));
                     break;
                 case deleteLock:
                     deleteLock(event);
@@ -256,7 +268,7 @@ public class RedisQues extends AbstractVerticle {
                     deleteAllLocks(event);
                     break;
                 case getQueueItemsCount:
-                    redisClient.llen(getQueuesPrefix() + event.body().getJsonObject(PAYLOAD).getString(QUEUENAME), new GetQueueItemsCountHandler(event));
+                    redisClient.llen(getQueuesPrefix() + body.getJsonObject(PAYLOAD).getString(QUEUENAME), new GetQueueItemsCountHandler(event));
                     break;
                 case getQueuesCount:
                     getQueuesCount(event);
@@ -293,6 +305,10 @@ public class RedisQues extends AbstractVerticle {
         // Handles notifications
         uidMessageConsumer = eb.consumer(uid, event -> {
             final String queue = event.body();
+            if( null == queue ){
+                log.warn( "Got msg with 'null' body. _err_20180911092815_" );
+                // TODO: Should we stop processing here?
+            }
             log.debug("RedisQues Got notification for queue " + queue);
             consume(queue);
         });
@@ -308,6 +324,11 @@ public class RedisQues extends AbstractVerticle {
                     log.trace("RedisQues refresh queues get: " + consumerKey);
                 }
                 redisClient.get(consumerKey, event1 -> {
+                    if( event1.failed() ){
+                        log.warn( "Failed to get queue consumer.", event1.cause() );
+                        // TODO: Should we continue with code below?
+                        //       If we do, that would execute code in 'else' branch.
+                    }
                     String consumer = event1.result();
                     if (uid.equals(consumer)) {
                         log.debug("RedisQues Periodic consumer refresh for active queue " + queue);
@@ -350,6 +371,7 @@ public class RedisQues extends AbstractVerticle {
         log.debug("RedisQues about to lockedEnqueue");
         JsonObject lockInfo = extractLockInfo(event.body().getJsonObject(PAYLOAD).getString(REQUESTED_BY));
         if (lockInfo != null) {
+            // TODO: This looks like we acquiring a lock here. But who releases that later?
             redisClient.hmset(getLocksKey(), new JsonObject().put(event.body().getJsonObject(PAYLOAD).getString(QUEUENAME), lockInfo.encode()),
                     putLockResult -> {
                         if (putLockResult.succeeded()) {
@@ -382,6 +404,7 @@ public class RedisQues extends AbstractVerticle {
                 redisClient.lrange(keyListRange, 0, maxQueueItemCountIndex, new GetQueueItemsHandler(event, queueItemCount));
             } else {
                 log.warn("RedisQues getQueueItems failed", countReply.cause());
+                event.reply(new JsonObject().put(STATUS, ERROR));
             }
         });
     }
@@ -437,7 +460,12 @@ public class RedisQues extends AbstractVerticle {
             if (event1.succeeded()) {
                 String keyLrem = getQueuesPrefix() + event.body().getJsonObject(PAYLOAD).getString(QUEUENAME);
                 redisClient.lrem(keyLrem, 0, "TO_DELETE", replyLrem -> {
-                    event.reply(new JsonObject().put(STATUS, OK));
+                    if( replyLrem.succeeded() ) {
+                        event.reply(new JsonObject().put(STATUS, OK));
+                    }else{
+                        log.warn( "Redis 'lrem' command failed.", replyLrem.cause() );
+                        event.reply(new JsonObject().put(STATUS,ERROR));
+                    }
                 });
             } else {
                 event.reply(new JsonObject().put(STATUS, ERROR));
@@ -450,8 +478,18 @@ public class RedisQues extends AbstractVerticle {
         boolean unlock = payload.getBoolean(UNLOCK, false);
         String queue = payload.getString(QUEUENAME);
         redisClient.del(buildQueueKey(queue), deleteReply -> {
+            if( deleteReply.failed() ){
+                log.warn( "Failed to deleteAllQueueItems.", deleteReply.cause() );
+                // TODO: Is there any reason to continue with code below?
+            }
             if (unlock) {
-                redisClient.hdel(getLocksKey(), queue, unlockReply -> replyResultGreaterThanZero(event, deleteReply));
+                redisClient.hdel(getLocksKey(), queue, unlockReply -> {
+                    if( unlockReply.failed() ){
+                        log.warn( "Failed to delete lock.", unlockReply.cause() );
+                        // TODO: What should we do now?
+                    }
+                    replyResultGreaterThanZero(event, deleteReply);
+                });
             } else {
                 replyResultGreaterThanZero(event, deleteReply);
             }
@@ -792,6 +830,10 @@ public class RedisQues extends AbstractVerticle {
                         log.trace("RedisQues unregister consumers get: " + consumerKey);
                     }
                     redisClient.get(consumerKey, event1 -> {
+                        if( event1.failed() ){
+                            log.error( "Failed to retrieve consumer '{}'.", consumerKey, event1.cause() );
+                            return; // No reason to continue below. It wouldn't do anything useful anyway.
+                        }
                         String consumer = event1.result();
                         if (log.isTraceEnabled()) {
                             log.trace("RedisQues unregister consumers get result: " + consumer);
@@ -840,6 +882,10 @@ public class RedisQues extends AbstractVerticle {
     private void consume(final String queue) {
         log.debug(" RedisQues Requested to consume queue " + queue);
         refreshRegistration(queue, event -> {
+            if( event.failed() ){
+                log.warn( "Failed to refresh registration for queue '{}'." , queue , event.cause() );
+                // TODO: Should we do something different instead code regular code below?
+            }
             // Make sure that I am still the registered consumer
             String key = getConsumersPrefix() + queue;
             if (log.isTraceEnabled()) {
@@ -889,6 +935,7 @@ public class RedisQues extends AbstractVerticle {
         redisClient.hexists(getLocksKey(), queue, event -> {
             if (event.failed() || event.result() == null) {
                 log.warn("failed to check if queue '" + queue + "' is locked. Message: " + event.cause().getMessage());
+                // TODO:  Is it correct, to assume a queue is not locked in case our query failed?
                 future.complete(Boolean.FALSE);
             } else {
                 future.complete(event.result() == 1);
@@ -907,9 +954,15 @@ public class RedisQues extends AbstractVerticle {
         }
 
         isQueueLocked(queue).setHandler(lockAnswer -> {
+            // Implementation will NEVER reject that promise. Therefore we do no error
+            // handling here.
             boolean locked = lockAnswer.result();
             if (!locked) {
                 redisClient.lindex(key, 0, answer -> {
+                    if( answer.failed() ){
+                        log.warn( "Failed to peek queue '{}'" , queue );
+                        // TODO: What should we do now? return/continue?
+                    }
                     if (log.isTraceEnabled()) {
                         log.trace("RedisQues read queue lindex result: " + answer.result());
                     }
@@ -927,6 +980,10 @@ public class RedisQues extends AbstractVerticle {
                                     log.trace("RedisQues read queue lpop: " + key1);
                                 }
                                 redisClient.lpop(key1, jsonAnswer -> {
+                                    if( jsonAnswer.failed() ){
+                                        log.warn( "Failed to pop from queue '{}'" , queue , jsonAnswer.cause() );
+                                        // TODO: Should we do anything else here?
+                                    }
                                     log.debug("RedisQues Message removed, queue " + queue + " is ready again");
                                     myQueues.put(queue, QueueState.READY);
                                     vertx.cancelTimer(sendResult.timeoutId);
@@ -994,6 +1051,8 @@ public class RedisQues extends AbstractVerticle {
         timer.executeDelayedMax(processorDelayMax).setHandler(delayed -> {
             if (delayed.failed()) {
                 log.error("Delayed execution has failed. Cause: " + delayed.cause().getMessage());
+                final SendResult event = new SendResult(false, null);
+                handler.handle(event);
                 return;
             }
             final EventBus eb = vertx.eventBus();
@@ -1044,6 +1103,10 @@ public class RedisQues extends AbstractVerticle {
             log.trace("RedisQues notify consumer get: " + key);
         }
         redisClient.get(key, event -> {
+            if( event.failed() ){
+                log.warn( "Failed to get consumer for queue '{}'" , queue , event.cause() );
+                // TODO: What should we do now?
+            }
             String consumer = event.result();
             if (log.isTraceEnabled()) {
                 log.trace("RedisQues got consumer: " + consumer);
@@ -1128,7 +1191,11 @@ public class RedisQues extends AbstractVerticle {
                     if (event.result() == 1) {
                         log.debug("Updating queue timestamp " + queue);
                         // If not empty, update the queue timestamp to keep it in the sorted set.
-                        updateTimestamp(queue, message -> {
+                        updateTimestamp(queue, result -> {
+                            if( result.failed() ){
+                                log.warn( "Failed to update timestamps" , result.cause() );
+                                // TODO: What should we do now?
+                            }
                             // Ensure we clean the old queues after having updated all timestamps
                             if (counter.decrementAndGet() == 0) {
                                 removeOldQueues(limit);

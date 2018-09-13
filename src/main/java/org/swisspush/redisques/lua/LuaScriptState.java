@@ -93,6 +93,10 @@ public class LuaScriptState {
             } else {
                 log.info("load lua script for script type: " + luaScriptType);
                 redisClient.scriptLoad(script, stringAsyncResult -> {
+                    if( stringAsyncResult.failed() ){
+                        log.warn( "Received failed message for loadLuaScript. _err_20180907155737_." , stringAsyncResult.cause() );
+                        // TODO: Is there any sense to continue with below code?
+                    }
                     String newSha = stringAsyncResult.result();
                     log.info("got sha from redis for lua script: " + luaScriptType + ": " + newSha);
                     if(!newSha.equals(sha)) {
