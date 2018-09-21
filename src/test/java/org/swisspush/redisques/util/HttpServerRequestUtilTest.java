@@ -58,13 +58,13 @@ public class HttpServerRequestUtilTest {
 
     @Test
     public void testExtractJsonArrayFromBody(TestContext context){
-        Result<JsonArray, String> result = extractNonEmptyJsonArrayFromBody(LOCKS, "{\"locks\": [\"lock_1\", \"lock_2\", \"lock_3\"]}");
+        Result<JsonArray, Throwable> result = extractNonEmptyJsonArrayFromBody(LOCKS, "{\"locks\": [\"lock_1\", \"lock_2\", \"lock_3\"]}");
         context.assertTrue(result.isOk());
         context.assertEquals(new JsonArray().add("lock_1").add("lock_2").add("lock_3"), result.getOk());
 
         result = extractNonEmptyJsonArrayFromBody(LOCKS, "{\"locks\": []}");
         context.assertTrue(result.isErr());
-        context.assertEquals("array 'locks' is not allowed to be empty", result.getErr());
+        context.assertEquals("array 'locks' is not allowed to be empty", result.getErr().getMessage());
 
         //invalid json
         result = extractNonEmptyJsonArrayFromBody(LOCKS, "{\"locks\": []");

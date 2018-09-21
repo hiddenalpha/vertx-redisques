@@ -6,6 +6,7 @@ import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 
 import java.nio.charset.Charset;
+import java.util.NoSuchElementException;
 
 import static org.swisspush.redisques.util.RedisquesAPI.PAYLOAD;
 
@@ -50,19 +51,19 @@ public class HttpServerRequestUtil {
      * @param requestBody the request body to extract the array from
      * @return returns a {@link Result} having the non-empty {@link JsonArray} or an error message
      */
-    public static Result<JsonArray, String> extractNonEmptyJsonArrayFromBody(String property, String requestBody){
+    public static Result<JsonArray, Throwable> extractNonEmptyJsonArrayFromBody(String property, String requestBody){
         try{
             JsonObject jsonObject = new JsonObject(requestBody);
             JsonArray jsonArray = jsonObject.getJsonArray(property);
             if(jsonArray == null) {
-                return Result.err("no array called '"+property+"' found");
+                return Result.err(new NoSuchElementException("no array called '"+property+"' found"));
             }
             if(jsonArray.isEmpty()) {
-                return Result.err("array '"+property+"' is not allowed to be empty");
+                return Result.err(new IllegalArgumentException("array '"+property+"' is not allowed to be empty"));
             }
             return Result.ok(jsonArray);
         } catch (Exception ex){
-            return Result.err("failed to parse request payload");
+            return Result.err( ex );
         }
     }
 

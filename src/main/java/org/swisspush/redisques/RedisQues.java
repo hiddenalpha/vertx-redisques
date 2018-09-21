@@ -120,9 +120,11 @@ public class RedisQues extends AbstractVerticle {
 
     private LuaScriptManager luaScriptManager;
 
-    // Handler receiving registration requests when no consumer is registered
-    // for a queue.
-    private Handler<Message<String>> registrationRequestHandler = event -> {
+    /**
+     * <p>Handler receiving registration requests when no consumer is registered
+     * for a queue.</p>
+     */
+    private void registrationRequestHandler( Message<String> event ) {
         final String queue = event.body();
         log.debug("RedisQues Got registration request for queue " + queue + " from consumer: " + uid);
         // Try to register for this queue
@@ -147,7 +149,7 @@ public class RedisQues extends AbstractVerticle {
                 log.error("RedisQues setxn failed", event1.cause());
             }
         });
-    };
+    }
 
     @Override
     public void start() {
@@ -289,12 +291,12 @@ public class RedisQues extends AbstractVerticle {
         });
 
         // Handles registration requests
-        conumersMessageConsumer = eb.consumer(address + "-consumers", registrationRequestHandler);
+        conumersMessageConsumer = eb.consumer(address + "-consumers", this::registrationRequestHandler);
 
         // Handles notifications
         uidMessageConsumer = eb.consumer(uid, event -> {
             final String queue = event.body();
-            log.debug("RedisQues Got notification for queue " + queue);
+            log.debug("RedisQues Got notification for queue '{}'", queue);
             consume(queue);
         });
 
@@ -388,13 +390,15 @@ public class RedisQues extends AbstractVerticle {
     }
 
     private void getQueues(Message<JsonObject> event, boolean countOnly) {
-        Result<Optional<Pattern>, String> result = MessageUtil.extractFilterPattern(event);
+        Result<Optional<Pattern>, Throwable> result = MessageUtil.extractFilterPattern(event);
         getQueues(event, countOnly, result);
     }
 
-    private void getQueues(Message<JsonObject> event, boolean countOnly, Result<Optional<Pattern>, String> filterPatternResult) {
+    private void getQueues(Message<JsonObject> event, boolean countOnly, Result<Optional<Pattern>,Throwable> filterPatternResult) {
         if (filterPatternResult.isErr()) {
-            event.reply(new JsonObject().put(STATUS, ERROR).put(ERROR_TYPE, BAD_INPUT).put(MESSAGE, filterPatternResult.getErr()));
+            Throwable err = filterPatternResult.getErr();
+            log.error( err );
+            event.reply(new JsonObject().put(STATUS, ERROR).put(ERROR_TYPE, BAD_INPUT).put(MESSAGE, err.getMessage()));
         } else {
             redisClient.zrangebyscore(getQueuesKey(), String.valueOf(getMaxAgeTimestamp()), "+inf",
                     RangeLimitOptions.NONE, new GetQueuesHandler(event, filterPatternResult.getOk(), countOnly));
@@ -402,9 +406,9 @@ public class RedisQues extends AbstractVerticle {
     }
 
     private void getQueuesCount(Message<JsonObject> event) {
-        Result<Optional<Pattern>, String> result = MessageUtil.extractFilterPattern(event);
+        Result<Optional<Pattern>, Throwable> result = MessageUtil.extractFilterPattern(event);
         if (result.isErr()) {
-            event.reply(new JsonObject().put(STATUS, ERROR).put(ERROR_TYPE, BAD_INPUT).put(MESSAGE, result.getErr()));
+            event.reply(new JsonObject().put(STATUS, ERROR).put(ERROR_TYPE, BAD_INPUT).put(MESSAGE, result.getErr().getMessage()));
             return;
         }
 
@@ -496,8 +500,9 @@ public class RedisQues extends AbstractVerticle {
         if(queues == null){
             return null;
         }
-        List<String> queueKeys = new ArrayList<>();
-        for (int i = 0; i < queues.size(); i++) {
+        final int size = queues.size();
+        List<String> queueKeys = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
             String queue = queues.getString(i);
             queueKeys.add(buildQueueKey(queue));
         }
@@ -525,6 +530,7 @@ public class RedisQues extends AbstractVerticle {
             if(delManyReply.succeeded()){
                 event.reply(new JsonObject().put(STATUS, OK).put(VALUE, delManyReply.result()));
             } else {
+                log.error( "Failed to bulkDeleteQueues", delManyReply.cause() );
                 event.reply(new JsonObject().put(STATUS, ERROR));
             }
         });
@@ -534,16 +540,19 @@ public class RedisQues extends AbstractVerticle {
         if (reply.succeeded() && reply.result() != null && reply.result() > 0) {
             event.reply(new JsonObject().put(STATUS, OK).put(VALUE, reply.result()));
         } else {
+            log.error( "Failed to replyResultGreaterThanZero" , reply.cause() );
             event.reply(new JsonObject().put(STATUS, ERROR));
         }
     }
 
     private void getAllLocks(Message<JsonObject> event) {
-        Result<Optional<Pattern>, String> result = MessageUtil.extractFilterPattern(event);
+        Result<Optional<Pattern>, Throwable> result = MessageUtil.extractFilterPattern(event);
         if (result.isOk()) {
             redisClient.hkeys(getLocksKey(), new GetAllLocksHandler(event, result.getOk()));
         } else {
-            event.reply(new JsonObject().put(STATUS, ERROR).put(ERROR_TYPE, BAD_INPUT).put(MESSAGE, result.getErr()));
+            final Throwable err = result.getErr();
+            log.error(err);
+            event.reply(new JsonObject().put(STATUS, ERROR).put(ERROR_TYPE, BAD_INPUT).put(MESSAGE, err));
         }
     }
 
@@ -651,7 +660,7 @@ public class RedisQues extends AbstractVerticle {
                 array.getString(i);
             }
             return true;
-        } catch(Exception ex){
+        } catch(ClassCastException ex){
             return false;
         }
     }
@@ -994,7 +1003,7 @@ public class RedisQues extends AbstractVerticle {
         }
         timer.executeDelayedMax(processorDelayMax).setHandler(delayed -> {
             if (delayed.failed()) {
-                log.error("Delayed execution has failed. Cause: " + delayed.cause().getMessage());
+                log.error("Delayed execution has failed. ", delayed.cause() );
                 return;
             }
             final EventBus eb = vertx.eventBus();
@@ -1008,7 +1017,7 @@ public class RedisQues extends AbstractVerticle {
             // start a timer, which will cancel the processing, if the consumer didn't respond
             final long timeoutId = vertx.setTimer(processorTimeout, timeoutId1 -> {
                 log.info("RedisQues QUEUE_ERROR: Consumer timeout " + uid + " queue: " + queue);
-                handler.handle(new SendResult(false, timeoutId1));
+                handler.handle(new SendResult(false, null));
             });
 
             // send the message to the consumer
@@ -1019,7 +1028,8 @@ public class RedisQues extends AbstractVerticle {
                 } else {
                     success = Boolean.FALSE;
                 }
-                handler.handle(new SendResult(success, timeoutId));
+                vertx.cancelTimer( timeoutId );
+                handler.handle(new SendResult(success, null));
             });
             updateTimestamp(queue, null);
         });

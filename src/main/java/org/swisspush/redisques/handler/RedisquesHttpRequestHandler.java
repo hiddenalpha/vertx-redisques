@@ -61,7 +61,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
                     if (result.succeeded()) {
                         log.info("Successfully started http request handler on port " + modConfig.getHttpRequestHandlerPort());
                     } else {
-                        log.error("Unable to start http request handler. Message: " + result.cause().getMessage());
+                        log.error("Unable to start http request handler.", result.cause() );
                     }
                 });
             } else {
@@ -225,7 +225,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
 
     private void getAllLocks(RoutingContext ctx) {
         String filter = ctx.request().params().get(FILTER);
-        eventBus.send(redisquesAddress, buildGetAllLocksOperation(Optional.ofNullable(filter)), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+        eventBus.send(redisquesAddress, buildGetAllLocksOperation(filter), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
             final JsonObject body = reply.result().body();
             if (OK.equals(body.getString(STATUS))) {
                 jsonResponse(ctx.response(), body.getJsonObject(VALUE));
@@ -286,9 +286,11 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private void bulkPutOrDeleteLocks(RoutingContext ctx) {
         ctx.request().bodyHandler(buffer -> {
             try {
-                Result<JsonArray, String> result = extractNonEmptyJsonArrayFromBody(LOCKS, buffer.toString());
+                Result<JsonArray, Throwable> result = extractNonEmptyJsonArrayFromBody(LOCKS, buffer.toString());
                 if (result.isErr()) {
-                    respondWith(StatusCode.BAD_REQUEST, result.getErr(), ctx.request());
+                    final Throwable err = result.getErr();
+                    log.error( "Failed to bulkPutOrDeleteLocks" , err );
+                    respondWith(StatusCode.BAD_REQUEST, err.getMessage(), ctx.request());
                     return;
                 }
 
@@ -326,9 +328,10 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
                     if (reply.succeeded() && OK.equals(reply.result().body().getString(STATUS))) {
                         respondWith(StatusCode.OK, ctx.request());
                     } else {
-                        String errorType = reply.result().body().getString(ERROR_TYPE);
+                        final JsonObject body = reply.result().body();
+                        final String errorType = body.getString(ERROR_TYPE);
                         if (errorType != null && BAD_INPUT.equalsIgnoreCase(errorType)) {
-                            respondWith(StatusCode.BAD_REQUEST, reply.result().body().getString(MESSAGE), ctx.request());
+                            respondWith(StatusCode.BAD_REQUEST, body.getString(MESSAGE), ctx.request());
                         } else {
                             respondWith(StatusCode.INTERNAL_SERVER_ERROR, ctx.request());
                         }
@@ -354,8 +357,8 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
             if (reply.succeeded() && OK.equals(reply.result().body().getString(STATUS))) {
                 jsonResponse(ctx.response(), reply.result().body().getJsonObject(VALUE));
             } else {
-                String error = "Error gathering configuration";
-                log.error(error);
+                final String error = "Error gathering configuration";
+                log.error( error , reply.cause() );
                 respondWith(StatusCode.INTERNAL_SERVER_ERROR, error, ctx.request());
             }
         });
@@ -418,7 +421,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
 
     private void getQueuesCount(RoutingContext ctx) {
         String filter = ctx.request().params().get(FILTER);
-        eventBus.send(redisquesAddress, buildGetQueuesCountOperation(Optional.ofNullable(filter)), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+        eventBus.send(redisquesAddress, buildGetQueuesCountOperation(filter), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
             if (reply.succeeded() && OK.equals(reply.result().body().getString(STATUS))) {
                 JsonObject result = new JsonObject();
                 result.put("count", reply.result().body().getLong(VALUE));
@@ -437,7 +440,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
 
     private void listQueues(RoutingContext ctx) {
         String filter = ctx.request().params().get(FILTER);
-        eventBus.send(redisquesAddress, buildGetQueuesOperation(Optional.ofNullable(filter)), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+        eventBus.send(redisquesAddress, buildGetQueuesOperation(filter), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
             if (reply.succeeded() && OK.equals(reply.result().body().getString(STATUS))) {
                 jsonResponse(ctx.response(), reply.result().body().getJsonObject(VALUE));
             } else {
@@ -498,8 +501,9 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     }
 
     private void getSingleQueueItem(RoutingContext ctx) {
-        final String queue = lastPart(ctx.request().path().substring(0, ctx.request().path().length() - 2));
-        final int index = Integer.parseInt(lastPart(ctx.request().path()));
+        final String path = ctx.request().path();
+        final String queue = lastPart(path.substring(0, path.length() - 2));
+        final int index = Integer.parseInt(lastPart(path));
         eventBus.send(redisquesAddress, buildGetQueueItemOperation(queue, index), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
             final JsonObject replyBody = reply.result().body();
             final HttpServerResponse response = ctx.response();
@@ -551,9 +555,11 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         if (evaluateUrlParameterToBeEmptyOrTrue(BULK_DELETE_PARAM, request)) {
             request.bodyHandler(buffer -> {
                 try {
-                    Result<JsonArray, String> result = extractNonEmptyJsonArrayFromBody(QUEUES, buffer.toString());
+                    Result<JsonArray, Throwable> result = extractNonEmptyJsonArrayFromBody(QUEUES, buffer.toString());
                     if (result.isErr()) {
-                        respondWith(StatusCode.BAD_REQUEST, result.getErr(), request);
+                        final Throwable err = result.getErr();
+                        log.error( "Failed to bulkDeleteQueues" , err );
+                        respondWith(StatusCode.BAD_REQUEST, err.getMessage(), request);
                         return;
                     }
                     eventBus.send(redisquesAddress, buildBulkDeleteQueuesOperation(result.getOk()), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {

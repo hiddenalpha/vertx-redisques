@@ -16,7 +16,7 @@ import static org.swisspush.redisques.util.RedisquesAPI.PAYLOAD;
  */
 public class MessageUtil {
 
-    public static Result<Optional<Pattern>, String> extractFilterPattern(Message<JsonObject> event) {
+    public static Result<Optional<Pattern>, Throwable> extractFilterPattern(Message<JsonObject> event) {
         JsonObject payload = event.body().getJsonObject(PAYLOAD);
         if (payload == null || payload.getString(FILTER) == null) {
             return Result.ok(Optional.empty());
@@ -26,7 +26,7 @@ public class MessageUtil {
             Pattern pattern = Pattern.compile(filterString);
             return Result.ok(Optional.of(pattern));
         } catch (Exception ex) {
-            return Result.err("Error while compile regex pattern. Cause: " + ex.getMessage());
+            return Result.err( new Exception("Failed to compile regex pattern",ex) );
         }
     }
 }
