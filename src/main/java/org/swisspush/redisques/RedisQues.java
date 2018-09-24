@@ -486,9 +486,8 @@ public class RedisQues extends AbstractVerticle {
         redisClient.del(buildQueueKey(queue), deleteReply -> {
             if (deleteReply.failed()) {
                 log.warn("Failed to deleteAllQueueItems.", deleteReply.cause());
-                // I like to return here. But:
-                // We need to continue below to may release lock. After lock is released, impl will
-                // respond to event with ERROR anyway.
+                // I like to return here. But: We need to continue below to may release lock.
+                // After lock is released, impl will respond to event with ERROR anyway.
             }
             if (unlock) {
                 redisClient.hdel(getLocksKey(), queue, unlockReply -> {
