@@ -547,27 +547,20 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         final HttpServerRequest request = ctx.request();
         final String queue = part(request.path(), 2);
         checkLocked(queue, request, event -> {
-            if (event.failed()) {
-                log.error("Failed to check if queue '{}' is locked", queue, event.cause());
-                respondWith(StatusCode.INTERNAL_SERVER_ERROR, request);
-            } else if (!event.result()) {
-                respondWithQueueMustBeLocked(ctx.response());
-            } else {
-                final int index = Integer.parseInt(lastPart(request.path()));
-                request.bodyHandler(buffer -> {
-                    try {
-                        String strBuffer = encodePayload(buffer.toString());
-                        eventBus.send(redisquesAddress, buildReplaceQueueItemOperation(queue, index, strBuffer),
-                                (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
-                                    checkReply(reply.result(), request, StatusCode.NOT_FOUND);
-                                }
-                        );
-                    } catch (Exception ex) {
-                        log.warn("Undocumented exception caught while replaceSingleQueueItem.", ex);
-                        respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), request);
-                    }
-                });
-            }
+            final int index = Integer.parseInt(lastPart(request.path()));
+            request.bodyHandler(buffer -> {
+                try {
+                    String strBuffer = encodePayload(buffer.toString());
+                    eventBus.send(redisquesAddress, buildReplaceQueueItemOperation(queue, index, strBuffer),
+                            (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
+                                checkReply(reply.result(), request, StatusCode.NOT_FOUND);
+                            }
+                    );
+                } catch (Exception ex) {
+                    log.warn("Undocumented exception caught while replaceSingleQueueItem.", ex);
+                    respondWith(StatusCode.BAD_REQUEST, ex.getMessage(), request);
+                }
+            });
         });
     }
 
