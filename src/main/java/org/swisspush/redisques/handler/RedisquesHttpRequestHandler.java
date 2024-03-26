@@ -33,44 +33,7 @@ import static org.swisspush.redisques.util.HttpServerRequestUtil.decode;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.encodePayload;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.evaluateUrlParameterToBeEmptyOrTrue;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.extractNonEmptyJsonArrayFromBody;
-import static org.swisspush.redisques.util.RedisquesAPI.BAD_INPUT;
-import static org.swisspush.redisques.util.RedisquesAPI.COUNT;
-import static org.swisspush.redisques.util.RedisquesAPI.ERROR_TYPE;
-import static org.swisspush.redisques.util.RedisquesAPI.FILTER;
-import static org.swisspush.redisques.util.RedisquesAPI.LIMIT;
-import static org.swisspush.redisques.util.RedisquesAPI.LOCKS;
-import static org.swisspush.redisques.util.RedisquesAPI.MEMORY_FULL;
-import static org.swisspush.redisques.util.RedisquesAPI.MESSAGE;
-import static org.swisspush.redisques.util.RedisquesAPI.MONITOR_QUEUE_SIZE;
-import static org.swisspush.redisques.util.RedisquesAPI.NO_SUCH_LOCK;
-import static org.swisspush.redisques.util.RedisquesAPI.OK;
-import static org.swisspush.redisques.util.RedisquesAPI.QUEUES;
-import static org.swisspush.redisques.util.RedisquesAPI.STATUS;
-import static org.swisspush.redisques.util.RedisquesAPI.VALUE;
-import static org.swisspush.redisques.util.RedisquesAPI.buildAddQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildBulkDeleteLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildBulkDeleteQueuesOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildBulkPutLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteAllLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteAllQueueItemsOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteLockOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildEnqueueOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetAllLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetConfigurationOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetLockOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueueItemsCountOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueueItemsOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesCountOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesItemsCountOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesSpeedOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesStatisticsOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildLockedEnqueueOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildPutLockOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildReplaceQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildSetConfigurationOperation;
+import static org.swisspush.redisques.util.RedisquesAPI.*;
 
 /**
  * Handler class for HTTP requests providing access to Redisques over HTTP.
@@ -553,17 +516,38 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
             if( !OK.equals(status) ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
             JsonArray queuesJsonArr = body.getJsonArray(QUEUES);
             if( queuesJsonArr == null || queuesJsonArr.isEmpty() ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            List<JsonObject> queues = queuesJsonArr.getList();
-            if (!includeEmptyQueues) queues.removeIf(q -> q.getLong(MONITOR_QUEUE_SIZE) <= 0);
+            int limitMakeJavaHappy = limit == 0 ? queuesJsonArr.size() : Math.min(limit, queuesJsonArr.size());
+            var queues = new ArrayList<Queue>(limitMakeJavaHappy);
+            for (var it = queuesJsonArr.iterator(); limitMakeJavaHappy > 0 && it.hasNext(); --limitMakeJavaHappy) {
+                JsonObject queueJson = (JsonObject) it.next();
+                String name = queueJson.getString(MONITOR_QUEUE_NAME);
+                Long size = queueJson.getLong(MONITOR_QUEUE_SIZE);
+                if (!includeEmptyQueues && (size == null || size == 0)) continue;
+                Queue queue = new Queue();
+                queue.name = name;
+                queue.size = size;
+                queues.add(queue);
+            }
             queues.sort(this::compareLargestFirst);
-            if( limit > 0 && queues.size() > limit ) queues = queues.subList(0, limit);
             throw new UnsupportedOperationException/*TODO*/("not impl yet");
         });
         throw new UnsupportedOperationException/*TODO*/("not impl yet");
     }
 
-    private int compareLargestFirst(JsonObject a, JsonObject b) {
-        return b.getLong(MONITOR_QUEUE_SIZE).compareTo(a.getLong(MONITOR_QUEUE_SIZE));
+    private static class Queue {
+        String name;
+        Long size;
+    }
+
+    private int compareLargestFirst(Queue aq, Queue bq) {
+        if (aq.size == null && bq.size == null) return 0;
+        if (aq.size == null) return -1;
+        if (bq.size == null) return +1;
+        long as = aq.size, bs = bq.size;
+        if (as > bs) return -1;
+        if (as < bs) return +1;
+        assert as == bs;
+        return 0;
     }
 
     private void listOrCountQueues(RoutingContext ctx) {
