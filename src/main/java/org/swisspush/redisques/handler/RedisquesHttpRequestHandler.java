@@ -523,7 +523,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         JsonObject operation = buildGetQueuesItemsCountOperation(filter);
         eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
             if (ev.failed()) {
-                throw new UnsupportedOperationException/*TODO*/("not impl yet");
+                throw new UnsupportedOperationException/*TODO*/("not impl yet", ev.cause());
             }
             Message<JsonObject> msg = ev.result();
             JsonObject body = msg.body();
