@@ -2,7 +2,6 @@ package org.swisspush.redisques.handler;
 
 import io.netty.util.internal.StringUtil;
 import io.vertx.core.AsyncResult;
-import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
@@ -12,7 +11,6 @@ import io.vertx.core.eventbus.Message;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
-import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.authentication.AuthenticationProvider;
@@ -21,69 +19,18 @@ import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BasicAuthHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.swisspush.redisques.util.DequeueStatistic;
-import org.swisspush.redisques.util.QueueStatisticsCollector;
-import org.swisspush.redisques.util.RedisquesAPI;
-import org.swisspush.redisques.util.RedisquesConfiguration;
-import org.swisspush.redisques.util.Result;
-import org.swisspush.redisques.util.StatusCode;
+import org.swisspush.redisques.util.*;
 
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
-import static org.swisspush.redisques.util.HttpServerRequestUtil.decode;
-import static org.swisspush.redisques.util.HttpServerRequestUtil.encodePayload;
-import static org.swisspush.redisques.util.HttpServerRequestUtil.evaluateUrlParameterToBeEmptyOrTrue;
-import static org.swisspush.redisques.util.HttpServerRequestUtil.extractNonEmptyJsonArrayFromBody;
-import static org.swisspush.redisques.util.RedisquesAPI.BAD_INPUT;
-import static org.swisspush.redisques.util.RedisquesAPI.COUNT;
-import static org.swisspush.redisques.util.RedisquesAPI.ERROR_TYPE;
-import static org.swisspush.redisques.util.RedisquesAPI.FILTER;
-import static org.swisspush.redisques.util.RedisquesAPI.LIMIT;
-import static org.swisspush.redisques.util.RedisquesAPI.LOCKS;
-import static org.swisspush.redisques.util.RedisquesAPI.MEMORY_FULL;
-import static org.swisspush.redisques.util.RedisquesAPI.MESSAGE;
-import static org.swisspush.redisques.util.RedisquesAPI.MONITOR_QUEUE_NAME;
-import static org.swisspush.redisques.util.RedisquesAPI.MONITOR_QUEUE_SIZE;
-import static org.swisspush.redisques.util.RedisquesAPI.NO_SUCH_LOCK;
-import static org.swisspush.redisques.util.RedisquesAPI.OK;
-import static org.swisspush.redisques.util.RedisquesAPI.QUEUES;
-import static org.swisspush.redisques.util.RedisquesAPI.STATISTIC_QUEUE_DEQUEUESTATISTIC;
-import static org.swisspush.redisques.util.RedisquesAPI.STATISTIC_QUEUE_LAST_DEQUEUE_ATTEMPT;
-import static org.swisspush.redisques.util.RedisquesAPI.STATISTIC_QUEUE_LAST_DEQUEUE_SUCCESS;
-import static org.swisspush.redisques.util.RedisquesAPI.STATISTIC_QUEUE_NEXT_DEQUEUE_DUE_TS;
-import static org.swisspush.redisques.util.RedisquesAPI.STATUS;
-import static org.swisspush.redisques.util.RedisquesAPI.VALUE;
-import static org.swisspush.redisques.util.RedisquesAPI.buildAddQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildBulkDeleteLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildBulkDeleteQueuesOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildBulkPutLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteAllLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteAllQueueItemsOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteLockOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildDeleteQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildEnqueueOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetAllLocksOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetConfigurationOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetLockOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueueItemsCountOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueueItemsOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesCountOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesItemsCountOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesSpeedOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildGetQueuesStatisticsOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildLockedEnqueueOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildPutLockOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildReplaceQueueItemOperation;
-import static org.swisspush.redisques.util.RedisquesAPI.buildSetConfigurationOperation;
+import static java.lang.Thread.currentThread;
+import static org.swisspush.redisques.util.HttpServerRequestUtil.*;
+import static org.swisspush.redisques.util.RedisquesAPI.*;
+import static org.swisspush.redisques.util.StatusCode.INTERNAL_SERVER_ERROR;
 
 /**
  * Handler class for HTTP requests providing access to Redisques over HTTP.
@@ -109,6 +56,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
 
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("dd.MM.yyyy hh:mm:ss");
 
+    private final Vertx vertx;
     private final String redisquesAddress;
     private final String userHeader;
     private final boolean enableQueueNameDecoding;
@@ -149,6 +97,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     }
 
     private RedisquesHttpRequestHandler(Vertx vertx, RedisquesConfiguration modConfig, QueueStatisticsCollector queueStatisticsCollector) {
+        this.vertx = vertx;
         this.router = Router.router(vertx);
         this.eventBus = vertx.eventBus();
         this.redisquesAddress = modConfig.getAddress();
@@ -550,87 +499,138 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         final boolean emptyQueues = evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request());
         final int limit = extractLimit(ctx);
         String filter = ctx.request().params().get(FILTER);
-        eventBus.request(redisquesAddress, buildGetQueuesItemsCountOperation(filter), (Handler<AsyncResult<Message<JsonObject>>>) reply -> {
-            if (reply.succeeded() && OK.equals(reply.result().body().getString(STATUS))) {
-                JsonArray queuesArray = reply.result().body().getJsonArray(QUEUES);
-                if (queuesArray != null && !queuesArray.isEmpty()) {
-                    List<JsonObject> queuesList = queuesArray.getList();
-                    queuesList = sortJsonQueueArrayBySize(queuesList);
-                    if (!emptyQueues) {
-                        queuesList = filterJsonQueueArrayNotEmpty(queuesList);
-                    }
-                    if (limit > 0) {
-                        queuesList = limitJsonQueueArray(queuesList, limit);
-                    }
-
-                    // this function always succeeds, no need to handle the error case
-                    fillStatisticToQueuesList(queuesList).onSuccess(updatedQueuesList -> {
-                        JsonObject resultObject = new JsonObject();
-                        resultObject.put(QUEUES, updatedQueuesList);
-                        jsonResponse(ctx.response(), resultObject);
-                    });
-                } else {
-                    // there was no result, we as well return an empty result
-                    JsonObject resultObject = new JsonObject();
-                    resultObject.put(QUEUES, new JsonArray());
-                    jsonResponse(ctx.response(), resultObject);
-                }
-            } else {
-                String error = "Error gathering names of active queues";
-                log.error(error, reply.cause());
-                respondWith(StatusCode.INTERNAL_SERVER_ERROR, error, ctx.request());
+        var p = Promise.<Buffer>promise();
+        getQueueItemsCount(emptyQueues, limit, filter, p);
+        p.future().onComplete( ev -> {
+            assert !ev.failed() : "TODO";
+            if( ev.failed() ){
+                String msg = "Failed to get queue items count";
+                log.error(msg, ev.cause());
+                respondWith(StatusCode.INTERNAL_SERVER_ERROR, msg, ctx.request());
+                return;
             }
+            var buf = ev.result();
+            var rsp = ctx.response();
+            rsp.putHeader(CONTENT_TYPE, APPLICATION_JSON);
+            rsp.end(buf);
         });
     }
 
-    private Future<List<JsonObject>> fillStatisticToQueuesList(List<JsonObject> queuesList) {
-        Promise<List<JsonObject>> promise = Promise.promise();
-        List<String> queueNameList = new ArrayList<>();
-        for (JsonObject jsonObject : queuesList) {
-            queueNameList.add(jsonObject.getString(MONITOR_QUEUE_NAME));
-        }
-
-        queueStatisticsCollector.getQueueStatistics(queueNameList)
-                .onFailure(ex -> {
-                    log.error("Failed to fetch QueueStatistics for queue", ex);
-                    promise.complete(queuesList);
-                })
-                .onSuccess(queueStatisticsJsonObject -> {
-                    if (OK.equals(queueStatisticsJsonObject.getString(STATUS))
-                            && !queueStatisticsJsonObject.getJsonArray(QUEUES).isEmpty()) {
-                        JsonArray queueStatisticsArray = queueStatisticsJsonObject.getJsonArray(QUEUES);
-                        queuesList.forEach(entries -> {
-                            String queueName = entries.getString(MONITOR_QUEUE_NAME);
-                            entries.put(STATISTIC_QUEUE_LAST_DEQUEUE_ATTEMPT, "");
-                            entries.put(STATISTIC_QUEUE_LAST_DEQUEUE_SUCCESS, "");
-                            entries.put(STATISTIC_QUEUE_NEXT_DEQUEUE_DUE_TS, "");
-                            queueStatisticsJsonObject.getJsonArray(QUEUES);
-
-                            for (Iterator<Object> it = queueStatisticsArray.stream().iterator(); it.hasNext(); ) {
-                                JsonObject queueStatistic = (JsonObject) it.next();
-                                if (queueName.equals(queueStatistic.getString(MONITOR_QUEUE_NAME))
-                                && queueStatistic.containsKey(STATISTIC_QUEUE_DEQUEUESTATISTIC)
-                                && queueStatistic.getJsonObject(STATISTIC_QUEUE_DEQUEUESTATISTIC) != null) {
-                                    DequeueStatistic dequeueStatistic = queueStatistic.getJsonObject(STATISTIC_QUEUE_DEQUEUESTATISTIC).mapTo(DequeueStatistic.class);
-                                    if (dequeueStatistic.lastDequeueAttemptTimestamp != null) {
-                                        entries.put(STATISTIC_QUEUE_LAST_DEQUEUE_ATTEMPT, DATE_FORMAT.format(new Date(dequeueStatistic.lastDequeueAttemptTimestamp)));
-                                    }
-                                    if (dequeueStatistic.lastDequeueSuccessTimestamp != null) {
-                                        entries.put(STATISTIC_QUEUE_LAST_DEQUEUE_SUCCESS, DATE_FORMAT.format(new Date(dequeueStatistic.lastDequeueSuccessTimestamp)));
-                                    }
-                                    if (dequeueStatistic.nextDequeueDueTimestamp != null) {
-                                        entries.put(STATISTIC_QUEUE_NEXT_DEQUEUE_DUE_TS, DATE_FORMAT.format(new Date(dequeueStatistic.nextDequeueDueTimestamp)));
-                                    }
-                                    break;
-                                }
-                            }
-                        });
+    private void getQueueItemsCount(boolean emptyQueues, int limit, String filter, Promise<Buffer> onDone1) {
+        eventBus.<JsonObject>request(redisquesAddress, buildGetQueuesItemsCountOperation(filter), reply -> {
+            if (reply.failed() || !OK.equals(reply.result().body().getString(STATUS))) {
+                onDone1.fail(new Exception("Error gathering names of active queues", reply.cause()));
+                return;
+            }
+            JsonArray queuesArray = reply.result().body().getJsonArray(QUEUES);
+            if (queuesArray == null || queuesArray.isEmpty()) {
+                // there was no result, we as well return an empty result
+                onDone1.complete(Buffer.buffer("{\"queues\":[]}\n"));
+                return;
+            }
+            final Thread evLoopThrd = currentThread();
+            vertx.<Buffer>executeBlocking( onDone2 -> {
+                final Thread workerThr = currentThread();
+                assert !workerThr.getName().contains("eventloop");
+                enrichQueueDetails(queuesArray, emptyQueues, limit, (ex, enrichedQueues) -> {
+                    assert !currentThread().getName().contains("eventloop") : "I'm curious if this is true";
+                    var rsp = ctx.response();
+                    if( ex != null ){
+                        log.warn("TODO error handling (findme_3298hguq3j)", ex);
+                        rsp.setStatusCode(INTERNAL_SERVER_ERROR.getStatusCode());
+                        return;
                     }
-                    promise.complete(queuesList);
+                    var rspBodyJson = new JsonObject();
+                    rspBodyJson.put(QUEUES, enrichedQueues);
+                    var rspBodyBuf = rspBodyJson.toBuffer();
+                    onDone2.complete(rspBodyBuf);
                 });
-        return promise.future();
+            }, false, fut -> {
+                assert currentThread().getName().contains("eventloop");
+                if (fut.failed()) throw new UnsupportedOperationException("TODO error handling", fut.cause());
+                Buffer rspBody = fut.result();
+                assert rspBody != null;
+                HttpServerResponse rsp = ctx.response();
+                rsp.putHeader(CONTENT_TYPE, APPLICATION_JSON);
+                rsp.end(rspBody);
+            });
+        });
     }
 
+    private void enrichQueueDetails(JsonArray queuesArray, boolean emptyQueues, int limit, BiConsumer<Throwable, List<JsonObject>> onDone){
+        assert !currentThread().getName().contains("eventloop");
+        List<JsonObject> queuesList = queuesArray.getList();
+        queuesList.sort(this::longestFirst);
+        if (!emptyQueues) queuesList.removeIf(q -> q.getLong(MONITOR_QUEUE_SIZE) <= 0);
+        if (limit > queuesList.size()) {
+            var tmp = new ArrayList<JsonObject>(limit);
+            tmp.addAll(queuesList.subList(0, limit));
+            queuesList = tmp;
+        }
+        var makeJavaHappy = queuesList;
+        fetchQueueDetails(queuesList, (ex, details) -> {
+            assert !currentThread().getName().contains("eventloop") : "WRONG thread sir";
+            if( ex != null ){
+                log.error("Failed to fetch QueueStatistics for queue", ex);
+                // Deliver result without details.
+                onDone.accept(null, makeJavaHappy);
+                return;
+            }
+            // Setup a dictionary so we can lookup the queues by name.
+            var detailsByQueueName = new HashMap<String, JsonObject>(details.size());
+            for (Object detailObj : details) {
+                var detail = ((JsonObject) detailObj);
+                var detailQueueName = detail.getString(MONITOR_QUEUE_NAME);
+                detailsByQueueName.putIfAbsent(detailQueueName, detail);
+            }
+            // Copy over the details for every queue.
+            for (JsonObject queue : makeJavaHappy) {
+                String queueName = queue.getString(MONITOR_QUEUE_NAME);
+                // TODO do we really want to put empty strings everywhere?
+                queue.put(STATISTIC_QUEUE_LAST_DEQUEUE_ATTEMPT, "");
+                queue.put(STATISTIC_QUEUE_LAST_DEQUEUE_SUCCESS, "");
+                queue.put(STATISTIC_QUEUE_NEXT_DEQUEUE_DUE_TS, "");
+                // EndOf TODO
+
+                // Look if we have details for this queue
+                JsonObject queueDetails = detailsByQueueName.get(queueName);
+                if (queueDetails == null) continue;
+                JsonObject val = queueDetails.getJsonObject(STATISTIC_QUEUE_DEQUEUESTATISTIC);
+                if( val == null) continue;
+                DequeueStatistic dequeueStatistic = val.mapTo(DequeueStatistic.class);
+
+                // Attach the additional details to queue where available
+                if (dequeueStatistic.lastDequeueAttemptTimestamp != null) {
+                    queue.put(STATISTIC_QUEUE_LAST_DEQUEUE_ATTEMPT, DATE_FORMAT.format(new Date(dequeueStatistic.lastDequeueAttemptTimestamp)));
+                }
+                if (dequeueStatistic.lastDequeueSuccessTimestamp != null) {
+                    queue.put(STATISTIC_QUEUE_LAST_DEQUEUE_SUCCESS, DATE_FORMAT.format(new Date(dequeueStatistic.lastDequeueSuccessTimestamp)));
+                }
+                if (dequeueStatistic.nextDequeueDueTimestamp != null) {
+                    queue.put(STATISTIC_QUEUE_NEXT_DEQUEUE_DUE_TS, DATE_FORMAT.format(new Date(dequeueStatistic.nextDequeueDueTimestamp)));
+                }
+            }
+
+            onDone.accept(null, makeJavaHappy);
+        });
+    }
+
+    private void fetchQueueDetails(List<JsonObject> queuesList, BiConsumer<Throwable, JsonArray> onDone){
+        List<String> queueNames = new ArrayList<>(queuesList.size());
+        for (JsonObject j : queuesList) queueNames.add(j.getString(MONITOR_QUEUE_NAME));
+        queueStatisticsCollector.getQueueStatistics(queueNames).onComplete(ev -> {
+            if (ev.failed()) {
+                onDone.accept(ev.cause(), null);
+                return;
+            }
+            JsonObject details = ev.result();
+            if (!OK.equals(details.getString(STATUS)) || details.getJsonArray(QUEUES).isEmpty()) {
+                log.warn("TODO why did original impl just ignore this case? (findme_938hu39805hj)");
+                return;
+            }
+            onDone.accept(null, details.getJsonArray(QUEUES));
+        });
+    }
 
     private void listOrCountQueues(RoutingContext ctx) {
         if (evaluateUrlParameterToBeEmptyOrTrue(COUNT, ctx.request())) {
@@ -945,9 +945,8 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         }
     }
 
-    private List<JsonObject> sortJsonQueueArrayBySize(List<JsonObject> queueList) {
-        queueList.sort((left, right) -> right.getLong(MONITOR_QUEUE_SIZE).compareTo(left.getLong(MONITOR_QUEUE_SIZE)));
-        return queueList;
+    private int longestFirst(JsonObject a, JsonObject b) {
+        return b.getLong(MONITOR_QUEUE_NAME).compareTo(a.getLong(MONITOR_QUEUE_NAME));
     }
 
     private List<JsonObject> filterJsonQueueArrayNotEmpty(List<JsonObject> queueList) {
