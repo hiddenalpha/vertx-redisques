@@ -3,6 +3,7 @@ package org.swisspush.redisques.handler;
 import io.netty.util.internal.StringUtil;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.EventBus;
@@ -34,6 +35,7 @@ import static org.swisspush.redisques.util.HttpServerRequestUtil.encodePayload;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.evaluateUrlParameterToBeEmptyOrTrue;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.extractNonEmptyJsonArrayFromBody;
 import static org.swisspush.redisques.util.RedisquesAPI.*;
+import static java.lang.System.currentTimeMillis;
 
 /**
  * Handler class for HTTP requests providing access to Redisques over HTTP.
@@ -500,11 +502,24 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         boolean includeEmptyQueues = evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request());
         int limit = extractLimit(ctx);
         String filter = ctx.request().params().get(FILTER);
-        doSomeUnexplainedMagicToGetSomewhat(filter, includeEmptyQueues, limit);
+        var p1 = Promise.<List<Queue>>promise();
+        fetchQueueNamesAndSize(filter, includeEmptyQueues, limit, p1);
+        p1.future().onComplete( ev1 -> {
+            if (ev1.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet", ev1.cause());
+            List<Queue> queues = ev1.result();
+            var queueNames = new ArrayList<String>(queues.size());
+            for (Queue q : queues) queueNames.add(q.name);
+            var p2 = Promise.<JsonArray>promise();
+            fetchMoreFunkyStuff(queueNames, p2);
+            p2.future().onComplete( ev2 -> {
+                if (ev2.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet", ev2.cause());
+                throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            });
+        });
         throw new UnsupportedOperationException/*TODO*/("not impl yet");
     }
 
-    private void doSomeUnexplainedMagicToGetSomewhat(String filter, boolean includeEmptyQueues, int limit) {
+    private void fetchQueueNamesAndSize(String filter, boolean includeEmptyQueues, int limit, Promise<List<Queue>> onDone) {
         JsonObject operation = buildGetQueuesItemsCountOperation(filter);
         eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
             if (ev.failed()) {
@@ -516,12 +531,13 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
             if( !OK.equals(status) ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
             JsonArray queuesJsonArr = body.getJsonArray(QUEUES);
             if( queuesJsonArr == null || queuesJsonArr.isEmpty() ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            int limitMakeJavaHappy = limit == 0 ? queuesJsonArr.size() : Math.min(limit, queuesJsonArr.size());
-            var queues = new ArrayList<Queue>(limitMakeJavaHappy);
-            for (var it = queuesJsonArr.iterator(); limitMakeJavaHappy > 0 && it.hasNext(); --limitMakeJavaHappy) {
+            List<Queue> queues = new ArrayList<>(queuesJsonArr.size());
+            for (var it = queuesJsonArr.iterator(); it.hasNext(); ) {
                 JsonObject queueJson = (JsonObject) it.next();
                 String name = queueJson.getString(MONITOR_QUEUE_NAME);
                 Long size = queueJson.getLong(MONITOR_QUEUE_SIZE);
+                // No need to process empty queues any further if caller is not interested
+                // in them anyway.
                 if (!includeEmptyQueues && (size == null || size == 0)) continue;
                 Queue queue = new Queue();
                 queue.name = name;
@@ -529,9 +545,26 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
                 queues.add(queue);
             }
             queues.sort(this::compareLargestFirst);
-            throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            // Only the part with the most filled queues got requested. Get rid of
+            // all shorter queues then.
+            if (limit != 0 && queues.size() > limit) queues = queues.subList(0, limit);
+            onDone.complete(queues);
         });
-        throw new UnsupportedOperationException/*TODO*/("not impl yet");
+    }
+
+    private void fetchMoreFunkyStuff(List<String> queueNames, Promise<JsonArray> onDone) {
+        long begGetQueueStatsMs = currentTimeMillis();
+        queueStatisticsCollector.getQueueStatistics(queueNames).onComplete( ev -> {
+            long durGetQueueStatsMs = currentTimeMillis() - begGetQueueStatsMs;
+            if (durGetQueueStatsMs > 42) log.debug("queueStatisticsCollector.getQueueStatistics() took {}ms", durGetQueueStatsMs);
+            if (ev.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            JsonObject queStatsJsonObj = ev.result();
+            String status = queStatsJsonObj.getString(STATUS);
+            if (!OK.equals(status)) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            JsonArray queuesJsonArr = queStatsJsonObj.getJsonArray(QUEUES);
+            if (queuesJsonArr.isEmpty()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            onDone.complete(queuesJsonArr);
+        });
     }
 
     private static class Queue {
