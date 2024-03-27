@@ -3,7 +3,6 @@ package org.swisspush.redisques.handler;
 import io.netty.util.internal.StringUtil;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
-import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.eventbus.EventBus;
@@ -20,6 +19,7 @@ import io.vertx.ext.web.handler.BasicAuthHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.swisspush.redisques.QueueStatsService;
+import org.swisspush.redisques.QueueStatsService.GetQueueStatsMentor;
 import org.swisspush.redisques.util.QueueStatisticsCollector;
 import org.swisspush.redisques.util.RedisquesAPI;
 import org.swisspush.redisques.util.RedisquesConfiguration;
@@ -36,7 +36,6 @@ import static org.swisspush.redisques.util.HttpServerRequestUtil.encodePayload;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.evaluateUrlParameterToBeEmptyOrTrue;
 import static org.swisspush.redisques.util.HttpServerRequestUtil.extractNonEmptyJsonArrayFromBody;
 import static org.swisspush.redisques.util.RedisquesAPI.*;
-import static java.lang.System.currentTimeMillis;
 
 /**
  * Handler class for HTTP requests providing access to Redisques over HTTP.
@@ -48,6 +47,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
 
     private static final Logger log = LoggerFactory.getLogger(RedisquesHttpRequestHandler.class);
 
+    private final Vertx vertx;
     private final Router router;
     private final EventBus eventBus;
 
@@ -60,6 +60,13 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private static final String EMPTY_QUEUES_PARAM = "emptyQueues";
     private static final String DELETED = "deleted";
 
+    /**
+     * <p>For why we should NOT use such date formats, see SDCISA-15311. We really
+     * should utilize ISO dates and include timezone information.</p>
+     *
+     * @deprecated TODO <a href="https://xkcd.com/1179/>about date formats</a>"
+     */
+    @Deprecated
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("dd.MM.yyyy hh:mm:ss");
 
     private final String redisquesAddress;
@@ -67,6 +74,8 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     private final boolean enableQueueNameDecoding;
     private final int queueSpeedIntervalSec;
     private final QueueStatisticsCollector queueStatisticsCollector;
+    private final QueueStatsService queueStatsService;
+    private final GetQueueStatsMentor<RoutingContext> queueStatsMentor = new MyQueueStatsMentor();
 
     public static void init(Vertx vertx, RedisquesConfiguration modConfig, QueueStatisticsCollector queueStatisticsCollector) {
         log.info("Enable http request handler: " + modConfig.getHttpRequestHandlerEnabled());
@@ -102,6 +111,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     }
 
     private RedisquesHttpRequestHandler(Vertx vertx, RedisquesConfiguration modConfig, QueueStatisticsCollector queueStatisticsCollector) {
+        this.vertx = vertx;
         this.router = Router.router(vertx);
         this.eventBus = vertx.eventBus();
         this.redisquesAddress = modConfig.getAddress();
@@ -109,6 +119,7 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
         this.enableQueueNameDecoding = modConfig.getEnableQueueNameDecoding();
         this.queueSpeedIntervalSec = modConfig.getQueueSpeedIntervalSec();
         this.queueStatisticsCollector = queueStatisticsCollector;
+        this.queueStatsService = new QueueStatsService(vertx, eventBus, redisquesAddress, queueStatisticsCollector);
 
         final String prefix = modConfig.getHttpRequestHandlerPrefix();
 
@@ -500,15 +511,69 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     }
 
     private void getMonitorInformation(RoutingContext ctx) {
-        //boolean includeEmptyQueues = evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request());
-        //int limit = extractLimit(ctx);
-        //String filter = ctx.request().params().get(FILTER);
-        var queueStatsService = new QueueStatsService(eventBus, redisquesAddress)/*TODO inject via ctor*/;
-        queueStatsService.getQueueStats(null, new QueueStatsService.GetQueueStatsMentor<Void>() {
-            @Override public boolean includeEmptyQueues(Void c) { return evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request()); }
-            @Override public int limit(Void c) { return extractLimit(ctx); }
-            @Override public String filter(Void c) { return ctx.request().params().get(FILTER); }
-        });
+        queueStatsService.getQueueStats(ctx, queueStatsMentor);
+    }
+
+    private class MyQueueStatsMentor implements GetQueueStatsMentor<RoutingContext> {
+
+        @Override
+        public boolean includeEmptyQueues(RoutingContext ctx) {
+            return evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request());
+        }
+
+        @Override
+        public int limit(RoutingContext ctx) {
+            return extractLimit(ctx);
+        }
+
+        @Override
+        public String filter(RoutingContext ctx) {
+            return ctx.request().params().get(FILTER);
+        }
+
+        @Override
+        public void onQueueStatistics(List<QueueStatsService.Queue> queues, RoutingContext ctx) {
+            var rsp = ctx.request().response();
+            rsp.putHeader(CONTENT_TYPE, APPLICATION_JSON);
+            rsp.setChunked(true);
+            rsp.write("{\"queues\": [");
+            JsonObject queueJson = new JsonObject();
+            boolean isFirst = true;
+            for (QueueStatsService.Queue queue : queues) {
+                rsp.write(isFirst ? "" : ",");
+                isFirst = false;
+                queueJson.clear();
+                queueJson.put(MONITOR_QUEUE_NAME, queue.getName());
+                queueJson.put(MONITOR_QUEUE_SIZE, queue.getSize());
+                // TODO old impl did bloat result with empty strings for whatever undocumented
+                //      reason. Those fields should be set to 'null' (or we could even skip them
+                //      entirely in JSON), as obviously the information is not available. But
+                //      we'll add the same bloat as we don't know if any downstream code now
+                //      relies on this behavior.
+                Long epochMs;
+                epochMs = queue.getLastDequeueAttemptEpochMs();
+                queueJson.put("lastDequeueAttempt", epochMs == null ? "" : asUglyDate(epochMs));
+                epochMs = queue.getLastDequeueSuccessEpochMs();
+                queueJson.put("lastDequeueSuccess", epochMs == null ? "" : asUglyDate(epochMs));
+                epochMs = queue.getNextDequeueDueTimestampEpochMs();
+                queueJson.put("nextDequeueDueTimestamp", epochMs == null ? "" : asUglyDate(epochMs));
+                rsp.write(queueJson.encode());
+            }
+            rsp.end("]}\n");
+        }
+
+    }
+
+    /**
+     * <p>Old impl did not document WHY this date format got chosen. Now we're
+     * stuck as consumers likely rely on this format. To get this fixed, we have
+     * to find and fix all consumers.</p>
+     *
+     * @deprecated <a href="https://xkcd.com/1179/">about date formats</a>
+     */
+    @Deprecated
+    private String asUglyDate(long epochMs) {
+        return DATE_FORMAT.format(new Date(epochMs));
     }
 
     private void listOrCountQueues(RoutingContext ctx) {

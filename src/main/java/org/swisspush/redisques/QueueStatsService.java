@@ -1,15 +1,17 @@
 package org.swisspush.redisques;
 
-import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
 import io.vertx.core.eventbus.EventBus;
 import io.vertx.core.eventbus.Message;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import org.slf4j.Logger;
+import org.swisspush.redisques.util.DequeueStatistic;
 import org.swisspush.redisques.util.QueueStatisticsCollector;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.text.SimpleDateFormat;
+import java.util.*;
+import java.util.function.Consumer;
 
 import static java.lang.System.currentTimeMillis;
 import static org.slf4j.LoggerFactory.getLogger;
@@ -19,34 +21,38 @@ import static org.swisspush.redisques.util.RedisquesAPI.*;
 public class QueueStatsService {
 
     private static final Logger log = getLogger(QueueStatsService.class);
+    private final Vertx vertx;
     private final EventBus eventBus;
     private final String redisquesAddress;
     private final QueueStatisticsCollector queueStatisticsCollector;
 
-    public QueueStatsService(EventBus eventBus, String redisquesAddress, QueueStatisticsCollector queueStatisticsCollector) {
+    public QueueStatsService(Vertx vertx, EventBus eventBus, String redisquesAddress, QueueStatisticsCollector queueStatisticsCollector) {
+        this.vertx = vertx;
         this.eventBus = eventBus;
         this.redisquesAddress = redisquesAddress;
         this.queueStatisticsCollector = queueStatisticsCollector;
     }
 
     public <CTX> void getQueueStats(CTX mCtx, GetQueueStatsMentor<CTX> mentor) {
-        var p1 = Promise.<List<Queue>>promise();
-        fetchQueueNamesAndSize(mentor.filter(mCtx), mentor.includeEmptyQueues(mCtx), mentor.limit(mCtx), p1);
-        p1.future().onComplete( ev1 -> {
-            if (ev1.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet", ev1.cause());
-            List<Queue> queues = ev1.result();
-            var queueNames = new ArrayList<String>(queues.size());
-            for (Queue q : queues) queueNames.add(q.name);
-            var p2 = Promise.<JsonArray>promise();
-            fetchMoreFunkyStuff(queueNames, p2);
-            p2.future().onComplete( ev2 -> {
-                if (ev2.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet", ev2.cause());
-                throw new UnsupportedOperationException/*TODO*/("not impl yet");
+        var req = new GetQueueStatsRequest<CTX>();
+        req.mCtx = mCtx;
+        req.mentor = mentor;
+        fetchQueueNamesAndSize(req, ex1 -> {
+            if (ex1 != null) throw new UnsupportedOperationException/*TODO*/("not impl yet", ex1);
+            var queueNames = new ArrayList<String>(req.queues.size());
+            for (Queue q : req.queues) queueNames.add(q.name);
+            fetchMoreFunkyStuff(queueNames, req, ex2 -> {
+                if(ex2 != null) throw new UnsupportedOperationException/*TODO*/("not impl yet", ex2);
+                mergeMoreFunkyStuffIntoCollectedData(req, ex3 -> {
+                    if (ex3 != null) throw new UnsupportedOperationException/*TODO*/("not impl yet", ex3);
+                    req.mentor.onQueueStatistics(req.queues, req.mCtx);
+                });
             });
         });
     }
 
-    private void fetchQueueNamesAndSize(String filter, boolean includeEmptyQueues, int limit, Promise<List<Queue>> onDone) {
+    private <CTX> void fetchQueueNamesAndSize(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+        String filter = req.mentor.filter(req.mCtx);
         JsonObject operation = buildGetQueuesItemsCountOperation(filter);
         eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
             if (ev.failed()) {
@@ -58,6 +64,7 @@ public class QueueStatsService {
             if( !OK.equals(status) ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
             JsonArray queuesJsonArr = body.getJsonArray(QUEUES);
             if( queuesJsonArr == null || queuesJsonArr.isEmpty() ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            boolean includeEmptyQueues = req.mentor.includeEmptyQueues(req.mCtx);
             List<Queue> queues = new ArrayList<>(queuesJsonArr.size());
             for (var it = queuesJsonArr.iterator(); it.hasNext(); ) {
                 JsonObject queueJson = (JsonObject) it.next();
@@ -74,12 +81,14 @@ public class QueueStatsService {
             queues.sort(this::compareLargestFirst);
             // Only the part with the most filled queues got requested. Get rid of
             // all shorter queues then.
+            int limit = req.mentor.limit(req.mCtx);
             if (limit != 0 && queues.size() > limit) queues = queues.subList(0, limit);
-            onDone.complete(queues);
+            req.queues = queues;
+            onDone.accept(null);
         });
     }
 
-    private void fetchMoreFunkyStuff(List<String> queueNames, Promise<JsonArray> onDone) {
+    private <CTX> void fetchMoreFunkyStuff(List<String> queueNames, GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
         long begGetQueueStatsMs = currentTimeMillis();
         queueStatisticsCollector.getQueueStatistics(queueNames).onComplete( ev -> {
             long durGetQueueStatsMs = currentTimeMillis() - begGetQueueStatsMs;
@@ -90,8 +99,31 @@ public class QueueStatsService {
             if (!OK.equals(status)) throw new UnsupportedOperationException/*TODO*/("not impl yet");
             JsonArray queuesJsonArr = queStatsJsonObj.getJsonArray(QUEUES);
             if (queuesJsonArr.isEmpty()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            onDone.complete(queuesJsonArr);
+            req.queuesJsonArr = queuesJsonArr;
+            onDone.accept(null);
         });
+    }
+
+    private <CTX> void mergeMoreFunkyStuffIntoCollectedData(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+        // Setup an index (by name) to access our queues fast.
+        Map<String, JsonObject> detailsByName = new HashMap<>(req.queuesJsonArr.size());
+        for (var it = (Iterator<JsonObject>) (Object) req.queuesJsonArr.iterator(); it.hasNext(); ) {
+            JsonObject detailJson = it.next();
+            String name = detailJson.getString(MONITOR_QUEUE_NAME);
+            detailsByName.put(name, detailJson);
+        }
+        for (Queue queue : req.queues) {
+            JsonObject detail = detailsByName.get(queue.name);
+            if (detail == null) continue; // no details to enrich.
+            JsonObject dequeueStatsJson = detail.getJsonObject(STATISTIC_QUEUE_DEQUEUESTATISTIC);
+            if (dequeueStatsJson == null) continue; // no dequeue stats we could enrich
+            DequeueStatistic dequeueStats = dequeueStatsJson.mapTo(DequeueStatistic.class);
+            // Attach whatever details we got.
+            queue.lastDequeueAttemptEpochMs = dequeueStats.lastDequeueAttemptTimestamp;
+            queue.lastDequeueSuccessEpochMs = dequeueStats.lastDequeueSuccessTimestamp;
+            queue.nextDequeueDueTimestampEpochMs = dequeueStats.nextDequeueDueTimestamp;
+        }
+        vertx.runOnContext(v -> onDone.accept(null));
     }
 
     private int compareLargestFirst(Queue aq, Queue bq) {
@@ -106,19 +138,52 @@ public class QueueStatsService {
     }
 
 
-    private static class Queue {
-        String name;
-        Long size;
+    private static class GetQueueStatsRequest<CTX> {
+        private CTX mCtx;
+        private GetQueueStatsMentor<CTX> mentor;
+        private List<Queue> queues;
+        private JsonArray queuesJsonArr;
     }
 
 
+    public static class Queue {
+        private String name;
+        private Long size;
+        private Long lastDequeueAttemptEpochMs;
+        private Long lastDequeueSuccessEpochMs;
+        private Long nextDequeueDueTimestampEpochMs;
+
+        public String getName(){ return name; }
+        public long getSize(){ return size; }
+        public Long getLastDequeueAttemptEpochMs(){ return lastDequeueAttemptEpochMs; }
+        public Long getLastDequeueSuccessEpochMs(){ return lastDequeueSuccessEpochMs; }
+        public Long getNextDequeueDueTimestampEpochMs(){ return nextDequeueDueTimestampEpochMs; }
+    }
+
+
+    /**
+     * <p>Mentors fetching operations and so provides the fetcher the required
+     * information. Finally it also receives the operations result.</p>
+     *
+     * @param <CTX>
+     *     The context object of choice handled back to each callback so the mentor
+     *     knows about what request the fetcher is talking.
+     */
     public static interface GetQueueStatsMentor<CTX> {
 
+        /**
+         * <p>Returning true means that all queues will be present in the result. If
+         * false, empty queues won't show up the result.</p>
+         *
+         * @param ctx  See {@link GetQueueStatsMentor}.
+         */
         public boolean includeEmptyQueues( CTX ctx );
 
         public int limit( CTX ctx );
 
         public String filter( CTX ctx);
+
+        public void onQueueStatistics(List<Queue> queues, CTX mCtx);
     }
 
 }
