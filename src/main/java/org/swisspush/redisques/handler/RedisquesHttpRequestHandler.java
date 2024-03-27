@@ -19,6 +19,7 @@ import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BasicAuthHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.swisspush.redisques.QueueStatsService;
 import org.swisspush.redisques.util.QueueStatisticsCollector;
 import org.swisspush.redisques.util.RedisquesAPI;
 import org.swisspush.redisques.util.RedisquesConfiguration;
@@ -499,88 +500,15 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
     }
 
     private void getMonitorInformation(RoutingContext ctx) {
-        boolean includeEmptyQueues = evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request());
-        int limit = extractLimit(ctx);
-        String filter = ctx.request().params().get(FILTER);
-        var p1 = Promise.<List<Queue>>promise();
-        fetchQueueNamesAndSize(filter, includeEmptyQueues, limit, p1);
-        p1.future().onComplete( ev1 -> {
-            if (ev1.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet", ev1.cause());
-            List<Queue> queues = ev1.result();
-            var queueNames = new ArrayList<String>(queues.size());
-            for (Queue q : queues) queueNames.add(q.name);
-            var p2 = Promise.<JsonArray>promise();
-            fetchMoreFunkyStuff(queueNames, p2);
-            p2.future().onComplete( ev2 -> {
-                if (ev2.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet", ev2.cause());
-                throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            });
+        //boolean includeEmptyQueues = evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request());
+        //int limit = extractLimit(ctx);
+        //String filter = ctx.request().params().get(FILTER);
+        var queueStatsService = new QueueStatsService(eventBus, redisquesAddress)/*TODO inject via ctor*/;
+        queueStatsService.getQueueStats(null, new QueueStatsService.GetQueueStatsMentor<Void>() {
+            @Override public boolean includeEmptyQueues(Void c) { return evaluateUrlParameterToBeEmptyOrTrue(EMPTY_QUEUES_PARAM, ctx.request()); }
+            @Override public int limit(Void c) { return extractLimit(ctx); }
+            @Override public String filter(Void c) { return ctx.request().params().get(FILTER); }
         });
-        throw new UnsupportedOperationException/*TODO*/("not impl yet");
-    }
-
-    private void fetchQueueNamesAndSize(String filter, boolean includeEmptyQueues, int limit, Promise<List<Queue>> onDone) {
-        JsonObject operation = buildGetQueuesItemsCountOperation(filter);
-        eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
-            if (ev.failed()) {
-                throw new UnsupportedOperationException/*TODO*/("not impl yet", ev.cause());
-            }
-            Message<JsonObject> msg = ev.result();
-            JsonObject body = msg.body();
-            String status = body.getString(STATUS);
-            if( !OK.equals(status) ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            JsonArray queuesJsonArr = body.getJsonArray(QUEUES);
-            if( queuesJsonArr == null || queuesJsonArr.isEmpty() ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            List<Queue> queues = new ArrayList<>(queuesJsonArr.size());
-            for (var it = queuesJsonArr.iterator(); it.hasNext(); ) {
-                JsonObject queueJson = (JsonObject) it.next();
-                String name = queueJson.getString(MONITOR_QUEUE_NAME);
-                Long size = queueJson.getLong(MONITOR_QUEUE_SIZE);
-                // No need to process empty queues any further if caller is not interested
-                // in them anyway.
-                if (!includeEmptyQueues && (size == null || size == 0)) continue;
-                Queue queue = new Queue();
-                queue.name = name;
-                queue.size = size;
-                queues.add(queue);
-            }
-            queues.sort(this::compareLargestFirst);
-            // Only the part with the most filled queues got requested. Get rid of
-            // all shorter queues then.
-            if (limit != 0 && queues.size() > limit) queues = queues.subList(0, limit);
-            onDone.complete(queues);
-        });
-    }
-
-    private void fetchMoreFunkyStuff(List<String> queueNames, Promise<JsonArray> onDone) {
-        long begGetQueueStatsMs = currentTimeMillis();
-        queueStatisticsCollector.getQueueStatistics(queueNames).onComplete( ev -> {
-            long durGetQueueStatsMs = currentTimeMillis() - begGetQueueStatsMs;
-            if (durGetQueueStatsMs > 42) log.debug("queueStatisticsCollector.getQueueStatistics() took {}ms", durGetQueueStatsMs);
-            if (ev.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            JsonObject queStatsJsonObj = ev.result();
-            String status = queStatsJsonObj.getString(STATUS);
-            if (!OK.equals(status)) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            JsonArray queuesJsonArr = queStatsJsonObj.getJsonArray(QUEUES);
-            if (queuesJsonArr.isEmpty()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            onDone.complete(queuesJsonArr);
-        });
-    }
-
-    private static class Queue {
-        String name;
-        Long size;
-    }
-
-    private int compareLargestFirst(Queue aq, Queue bq) {
-        if (aq.size == null && bq.size == null) return 0;
-        if (aq.size == null) return -1;
-        if (bq.size == null) return +1;
-        long as = aq.size, bs = bq.size;
-        if (as > bs) return -1;
-        if (as < bs) return +1;
-        assert as == bs;
-        return 0;
     }
 
     private void listOrCountQueues(RoutingContext ctx) {
