@@ -20,21 +20,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.swisspush.redisques.QueueStatsService;
 import org.swisspush.redisques.QueueStatsService.GetQueueStatsMentor;
-import org.swisspush.redisques.util.QueueStatisticsCollector;
-import org.swisspush.redisques.util.RedisquesAPI;
-import org.swisspush.redisques.util.RedisquesConfiguration;
-import org.swisspush.redisques.util.Result;
-import org.swisspush.redisques.util.StatusCode;
+import org.swisspush.redisques.util.*;
 
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.Date;
+import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
-import static org.swisspush.redisques.util.HttpServerRequestUtil.decode;
-import static org.swisspush.redisques.util.HttpServerRequestUtil.encodePayload;
-import static org.swisspush.redisques.util.HttpServerRequestUtil.evaluateUrlParameterToBeEmptyOrTrue;
-import static org.swisspush.redisques.util.HttpServerRequestUtil.extractNonEmptyJsonArrayFromBody;
+import static org.swisspush.redisques.util.HttpServerRequestUtil.*;
 import static org.swisspush.redisques.util.RedisquesAPI.*;
 
 /**
@@ -560,6 +555,16 @@ public class RedisquesHttpRequestHandler implements Handler<HttpServerRequest> {
                 rsp.write(queueJson.encode());
             }
             rsp.end("]}\n");
+        }
+
+        @Override
+        public void onError(Throwable ex, RoutingContext ctx) {
+            String exMsg = ex.getMessage();
+            if (!ctx.response().ended()) {
+                respondWith(StatusCode.INTERNAL_SERVER_ERROR, exMsg, ctx.request());
+            } else {
+                log.warn("_q938hugz_ {}", ctx.request().uri(), ex);
+            }
         }
 
     }

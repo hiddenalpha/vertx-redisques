@@ -9,11 +9,11 @@ import org.slf4j.Logger;
 import org.swisspush.redisques.util.DequeueStatistic;
 import org.swisspush.redisques.util.QueueStatisticsCollector;
 
-import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.function.Consumer;
 
 import static java.lang.System.currentTimeMillis;
+import static java.util.Collections.emptyList;
 import static org.slf4j.LoggerFactory.getLogger;
 import static org.swisspush.redisques.util.RedisquesAPI.*;
 
@@ -38,13 +38,14 @@ public class QueueStatsService {
         req.mCtx = mCtx;
         req.mentor = mentor;
         fetchQueueNamesAndSize(req, ex1 -> {
-            if (ex1 != null) throw new UnsupportedOperationException/*TODO*/("not impl yet", ex1);
-            var queueNames = new ArrayList<String>(req.queues.size());
-            for (Queue q : req.queues) queueNames.add(q.name);
-            fetchMoreFunkyStuff(queueNames, req, ex2 -> {
-                if(ex2 != null) throw new UnsupportedOperationException/*TODO*/("not impl yet", ex2);
-                mergeMoreFunkyStuffIntoCollectedData(req, ex3 -> {
-                    if (ex3 != null) throw new UnsupportedOperationException/*TODO*/("not impl yet", ex3);
+            if (ex1 != null) { req.mentor.onError(ex1, req.mCtx); return; }
+            // Prepare a list of queue names as it is needed to fetch retryDetails.
+            req.queueNames = new ArrayList<>(req.queues.size());
+            for (Queue q : req.queues) req.queueNames.add(q.name);
+            fetchRetryDetails(req, ex2 -> {
+                if (ex2 != null) { req.mentor.onError(ex2, req.mCtx); return; }
+                mergeRetryDetailsIntoCollectedData(req, ex3 -> {
+                    if (ex3 != null) { req.mentor.onError(ex3, req.mCtx); return; }
                     req.mentor.onQueueStatistics(req.queues, req.mCtx);
                 });
             });
@@ -56,14 +57,22 @@ public class QueueStatsService {
         JsonObject operation = buildGetQueuesItemsCountOperation(filter);
         eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
             if (ev.failed()) {
-                throw new UnsupportedOperationException/*TODO*/("not impl yet", ev.cause());
+                req.mentor.onError(new Exception("eventBus.request()", ev.cause()), req.mCtx);
+                return;
             }
             Message<JsonObject> msg = ev.result();
             JsonObject body = msg.body();
             String status = body.getString(STATUS);
-            if( !OK.equals(status) ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            if (!OK.equals(status)) {
+                req.mentor.onError(new Exception("Unexpected status " + status), req.mCtx);
+                return;
+            }
             JsonArray queuesJsonArr = body.getJsonArray(QUEUES);
-            if( queuesJsonArr == null || queuesJsonArr.isEmpty() ) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            if (queuesJsonArr == null || queuesJsonArr.isEmpty()) {
+                log.debug("result was {}, we return an empty result.", queuesJsonArr == null ? "null" : "empty");
+                req.mentor.onQueueStatistics(emptyList(), req.mCtx);
+                return;
+            }
             boolean includeEmptyQueues = req.mentor.includeEmptyQueues(req.mCtx);
             List<Queue> queues = new ArrayList<>(queuesJsonArr.size());
             for (var it = queuesJsonArr.iterator(); it.hasNext(); ) {
@@ -88,24 +97,34 @@ public class QueueStatsService {
         });
     }
 
-    private <CTX> void fetchMoreFunkyStuff(List<String> queueNames, GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+    private <CTX> void fetchRetryDetails(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
         long begGetQueueStatsMs = currentTimeMillis();
-        queueStatisticsCollector.getQueueStatistics(queueNames).onComplete( ev -> {
+        assert req.queueNames != null;
+        queueStatisticsCollector.getQueueStatistics(req.queueNames).onComplete( ev -> {
+            req.queueNames = null; // <- no longer needed
             long durGetQueueStatsMs = currentTimeMillis() - begGetQueueStatsMs;
             if (durGetQueueStatsMs > 42) log.debug("queueStatisticsCollector.getQueueStatistics() took {}ms", durGetQueueStatsMs);
-            if (ev.failed()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
+            if (ev.failed()) {
+                log.warn("queueStatisticsCollector.getQueueStatistics() failed. Fallback to empty result.", ev.cause());
+                req.queuesJsonArr = new JsonArray();
+                onDone.accept(null);
+                return;
+            }
             JsonObject queStatsJsonObj = ev.result();
             String status = queStatsJsonObj.getString(STATUS);
-            if (!OK.equals(status)) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            JsonArray queuesJsonArr = queStatsJsonObj.getJsonArray(QUEUES);
-            if (queuesJsonArr.isEmpty()) throw new UnsupportedOperationException/*TODO*/("not impl yet");
-            req.queuesJsonArr = queuesJsonArr;
+            if (!OK.equals(status)) {
+                log.warn("queueStatisticsCollector.getQueueStatistics() responded '" + status + "'. Fallback to empty result.", ev.cause());
+                req.queuesJsonArr = new JsonArray();
+                onDone.accept(null);
+                return;
+            }
+            req.queuesJsonArr = queStatsJsonObj.getJsonArray(QUEUES);
             onDone.accept(null);
         });
     }
 
-    private <CTX> void mergeMoreFunkyStuffIntoCollectedData(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
-        // Setup an index (by name) to access our queues fast.
+    private <CTX> void mergeRetryDetailsIntoCollectedData(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+        // Setup a lookup table as we need to find by name further below.
         Map<String, JsonObject> detailsByName = new HashMap<>(req.queuesJsonArr.size());
         for (var it = (Iterator<JsonObject>) (Object) req.queuesJsonArr.iterator(); it.hasNext(); ) {
             JsonObject detailJson = it.next();
@@ -123,7 +142,7 @@ public class QueueStatsService {
             queue.lastDequeueSuccessEpochMs = dequeueStats.lastDequeueSuccessTimestamp;
             queue.nextDequeueDueTimestampEpochMs = dequeueStats.nextDequeueDueTimestamp;
         }
-        vertx.runOnContext(v -> onDone.accept(null));
+        onDone.accept(null);
     }
 
     private int compareLargestFirst(Queue aq, Queue bq) {
@@ -141,8 +160,9 @@ public class QueueStatsService {
     private static class GetQueueStatsRequest<CTX> {
         private CTX mCtx;
         private GetQueueStatsMentor<CTX> mentor;
-        private List<Queue> queues;
+        private List<String> queueNames;
         private JsonArray queuesJsonArr;
+        private List<Queue> queues;
     }
 
 
@@ -153,11 +173,11 @@ public class QueueStatsService {
         private Long lastDequeueSuccessEpochMs;
         private Long nextDequeueDueTimestampEpochMs;
 
-        public String getName(){ return name; }
-        public long getSize(){ return size; }
-        public Long getLastDequeueAttemptEpochMs(){ return lastDequeueAttemptEpochMs; }
-        public Long getLastDequeueSuccessEpochMs(){ return lastDequeueSuccessEpochMs; }
-        public Long getNextDequeueDueTimestampEpochMs(){ return nextDequeueDueTimestampEpochMs; }
+        public String getName() { return name; }
+        public long getSize() { return size; }
+        public Long getLastDequeueAttemptEpochMs() { return lastDequeueAttemptEpochMs; }
+        public Long getLastDequeueSuccessEpochMs() { return lastDequeueSuccessEpochMs; }
+        public Long getNextDequeueDueTimestampEpochMs() { return nextDequeueDueTimestampEpochMs; }
     }
 
 
@@ -183,7 +203,9 @@ public class QueueStatsService {
 
         public String filter( CTX ctx);
 
-        public void onQueueStatistics(List<Queue> queues, CTX mCtx);
+        public void onQueueStatistics(List<Queue> queues, CTX ctx);
+
+        public void onError(Throwable ex, CTX ctx);
     }
 
 }
