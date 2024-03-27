@@ -10,6 +10,7 @@ import org.swisspush.redisques.util.DequeueStatistic;
 import org.swisspush.redisques.util.QueueStatisticsCollector;
 
 import java.util.*;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import static java.lang.System.currentTimeMillis;
@@ -34,25 +35,25 @@ public class QueueStatsService {
     }
 
     public <CTX> void getQueueStats(CTX mCtx, GetQueueStatsMentor<CTX> mentor) {
-        var req = new GetQueueStatsRequest<CTX>();
-        req.mCtx = mCtx;
-        req.mentor = mentor;
-        fetchQueueNamesAndSize(req, ex1 -> {
-            if (ex1 != null) { req.mentor.onError(ex1, req.mCtx); return; }
+        var req0 = new GetQueueStatsRequest<CTX>();
+        req0.mCtx = mCtx;
+        req0.mentor = mentor;
+        fetchQueueNamesAndSize(req0, (ex1, req1) -> {
+            if (ex1 != null) { req1.mentor.onError(ex1, req1.mCtx); return; }
             // Prepare a list of queue names as it is needed to fetch retryDetails.
-            req.queueNames = new ArrayList<>(req.queues.size());
-            for (Queue q : req.queues) req.queueNames.add(q.name);
-            fetchRetryDetails(req, ex2 -> {
-                if (ex2 != null) { req.mentor.onError(ex2, req.mCtx); return; }
-                mergeRetryDetailsIntoCollectedData(req, ex3 -> {
-                    if (ex3 != null) { req.mentor.onError(ex3, req.mCtx); return; }
-                    req.mentor.onQueueStatistics(req.queues, req.mCtx);
+            req1.queueNames = new ArrayList<>(req1.queues.size());
+            for (Queue q : req1.queues) req1.queueNames.add(q.name);
+            fetchRetryDetails(req1, (ex2, req2) -> {
+                if (ex2 != null) { req2.mentor.onError(ex2, req2.mCtx); return; }
+                mergeRetryDetailsIntoCollectedData(req2, (ex3, req3) -> {
+                    if (ex3 != null) { req3.mentor.onError(ex3, req3.mCtx); return; }
+                    req3.mentor.onQueueStatistics(req3.queues, req3.mCtx);
                 });
             });
         });
     }
 
-    private <CTX> void fetchQueueNamesAndSize(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+    private <CTX> void fetchQueueNamesAndSize(GetQueueStatsRequest<CTX> req, BiConsumer<Throwable, GetQueueStatsRequest<CTX>> onDone) {
         String filter = req.mentor.filter(req.mCtx);
         JsonObject operation = buildGetQueuesItemsCountOperation(filter);
         eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
@@ -93,11 +94,11 @@ public class QueueStatsService {
             int limit = req.mentor.limit(req.mCtx);
             if (limit != 0 && queues.size() > limit) queues = queues.subList(0, limit);
             req.queues = queues;
-            onDone.accept(null);
+            onDone.accept(null, req);
         });
     }
 
-    private <CTX> void fetchRetryDetails(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+    private <CTX> void fetchRetryDetails(GetQueueStatsRequest<CTX> req, BiConsumer<Throwable, GetQueueStatsRequest<CTX>> onDone) {
         long begGetQueueStatsMs = currentTimeMillis();
         assert req.queueNames != null;
         queueStatisticsCollector.getQueueStatistics(req.queueNames).onComplete( ev -> {
@@ -107,7 +108,7 @@ public class QueueStatsService {
             if (ev.failed()) {
                 log.warn("queueStatisticsCollector.getQueueStatistics() failed. Fallback to empty result.", ev.cause());
                 req.queuesJsonArr = new JsonArray();
-                onDone.accept(null);
+                onDone.accept(null, req);
                 return;
             }
             JsonObject queStatsJsonObj = ev.result();
@@ -115,15 +116,15 @@ public class QueueStatsService {
             if (!OK.equals(status)) {
                 log.warn("queueStatisticsCollector.getQueueStatistics() responded '" + status + "'. Fallback to empty result.", ev.cause());
                 req.queuesJsonArr = new JsonArray();
-                onDone.accept(null);
+                onDone.accept(null, req);
                 return;
             }
             req.queuesJsonArr = queStatsJsonObj.getJsonArray(QUEUES);
-            onDone.accept(null);
+            onDone.accept(null, req);
         });
     }
 
-    private <CTX> void mergeRetryDetailsIntoCollectedData(GetQueueStatsRequest<CTX> req, Consumer<Throwable> onDone) {
+    private <CTX> void mergeRetryDetailsIntoCollectedData(GetQueueStatsRequest<CTX> req, BiConsumer<Throwable, GetQueueStatsRequest<CTX>> onDone) {
         // Setup a lookup table as we need to find by name further below.
         Map<String, JsonObject> detailsByName = new HashMap<>(req.queuesJsonArr.size());
         for (var it = (Iterator<JsonObject>) (Object) req.queuesJsonArr.iterator(); it.hasNext(); ) {
@@ -142,7 +143,7 @@ public class QueueStatsService {
             queue.lastDequeueSuccessEpochMs = dequeueStats.lastDequeueSuccessTimestamp;
             queue.nextDequeueDueTimestampEpochMs = dequeueStats.nextDequeueDueTimestamp;
         }
-        onDone.accept(null);
+        onDone.accept(null, req);
     }
 
     private int compareLargestFirst(Queue aq, Queue bq) {
