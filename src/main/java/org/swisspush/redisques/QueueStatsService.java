@@ -58,20 +58,21 @@ public class QueueStatsService {
         JsonObject operation = buildGetQueuesItemsCountOperation(filter);
         eventBus.<JsonObject>request(redisquesAddress, operation, ev -> {
             if (ev.failed()) {
-                req.mentor.onError(new Exception("eventBus.request()", ev.cause()), req.mCtx);
+                onDone.accept(new Exception("eventBus.request()", ev.cause()), null);
                 return;
             }
             Message<JsonObject> msg = ev.result();
             JsonObject body = msg.body();
             String status = body.getString(STATUS);
             if (!OK.equals(status)) {
-                req.mentor.onError(new Exception("Unexpected status " + status), req.mCtx);
+                onDone.accept(new Exception("Unexpected status " + status), null);
                 return;
             }
             JsonArray queuesJsonArr = body.getJsonArray(QUEUES);
             if (queuesJsonArr == null || queuesJsonArr.isEmpty()) {
                 log.debug("result was {}, we return an empty result.", queuesJsonArr == null ? "null" : "empty");
-                req.mentor.onQueueStatistics(emptyList(), req.mCtx);
+                req.queues = emptyList();
+                onDone.accept(null, req);
                 return;
             }
             boolean includeEmptyQueues = req.mentor.includeEmptyQueues(req.mCtx);
@@ -200,12 +201,18 @@ public class QueueStatsService {
          */
         public boolean includeEmptyQueues( CTX ctx );
 
+        /** <p>Limits the result to the largest N queues.</p> */
         public int limit( CTX ctx );
 
         public String filter( CTX ctx);
 
+        /** <p>Called ONCE with the final result.</p> */
         public void onQueueStatistics(List<Queue> queues, CTX ctx);
 
+        /**
+         * <p>Called as soon an error occurs. After an error occurred, {@link #onQueueStatistics(List, Object)}
+         * will NOT be called, as the operation did fail.</p>
+         */
         public void onError(Throwable ex, CTX ctx);
     }
 
