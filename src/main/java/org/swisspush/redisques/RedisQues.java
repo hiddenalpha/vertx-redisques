@@ -924,10 +924,9 @@ public class RedisQues extends AbstractVerticle {
                                 if (log.isTraceEnabled()) {
                                     log.trace("RedisQues remove old queue: {}", queueName);
                                 }
-                                dequeueStatistic.computeIfPresent(queueName, (s, dequeueStatistic) -> {
+                                for (DequeueStatistic dequeueStatistic : dequeueStatistic.values()) {
                                     dequeueStatistic.setMarkedForRemoval();
-                                    return dequeueStatistic;
-                                });
+                                }
                                 if (counter.decrementAndGet() == 0) {
                                     removeOldQueues(limit).onComplete(removeOldQueuesEvent -> {
                                         if( removeOldQueuesEvent.failed() )

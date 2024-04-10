@@ -1,8 +1,6 @@
 package org.swisspush.redisques.util;
 
-import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
-import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.shareddata.AsyncMap;
@@ -23,74 +21,81 @@ public class DequeueStatisticCollector {
     }
 
     public void setDequeueStatistic(final String queueName, final DequeueStatistic dequeueStatistic) {
-        sharedData.getLock(DEQUEUE_STATISTIC_LOCK_PREFIX.concat(queueName)).onSuccess(lock ->
-                sharedData.getAsyncMap(DEQUEUE_STATISTIC_DATA, (Handler<AsyncResult<AsyncMap<String, DequeueStatistic>>>) asyncResult -> {
-                    if (asyncResult.failed()) {
-                        log.error("Failed to get shared dequeue statistic data map.", asyncResult.cause());
-                        lock.release();
-                        return;
-                    }
-                    AsyncMap<String, DequeueStatistic> asyncMap = asyncResult.result();
-                    asyncMap.size().onComplete(mapSizeResult -> {
-                        log.debug("shared dequeue statistic map size: {}", mapSizeResult.result());
-                        asyncMap.get(queueName).onSuccess(sharedDequeueStatistic -> {
-                            if (sharedDequeueStatistic == null) {
-                                try {
-                                    asyncMap.put(queueName, dequeueStatistic).onSuccess(event -> {
-                                        log.debug("shared dequeue statistic for queue {} added.", queueName);
-                                        lock.release();
-                                    }).onFailure(event -> {
-                                        log.debug("shared dequeue statistic for queue {} failed to add.", queueName);
-                                        lock.release();
-                                    });
-                                } catch (Exception exception) {
-                                    log.error("Failed to put shared dequeue statistic for queue {}.", queueName, exception);
+        sharedData.getLock(DEQUEUE_STATISTIC_LOCK_PREFIX.concat(queueName)).onComplete(lockEv -> {
+            if (lockEv.failed()) throw new RuntimeException("TODO error handling", lockEv.cause());
+            var lock = lockEv.result();
+            sharedData.<String, DequeueStatistic>getAsyncMap(DEQUEUE_STATISTIC_DATA, asyncResult -> {
+                if (asyncResult.failed()) {
+                    log.error("Failed to get shared dequeue statistic data map.", asyncResult.cause());
+                    lock.release();
+                    return;
+                }
+                AsyncMap<String, DequeueStatistic> asyncMap = asyncResult.result();
+                asyncMap.size().onComplete(mapSizeResult -> {
+                    if (mapSizeResult.failed()) throw new RuntimeException("TODO error handling", mapSizeResult.cause());
+                    log.debug("shared dequeue statistic map size: {}", mapSizeResult.result());
+                    asyncMap.get(queueName).onSuccess(sharedDequeueStatistic -> {
+                        if (sharedDequeueStatistic == null) {
+                            try {
+                                asyncMap.put(queueName, dequeueStatistic).onSuccess(nothing -> {
+                                    log.debug("shared dequeue statistic for queue {} added.", queueName);
                                     lock.release();
-                                }
-                            } else if (sharedDequeueStatistic.getLastUpdatedTimestamp() < dequeueStatistic.getLastUpdatedTimestamp()) {
-                                if (dequeueStatistic.isMarkedForRemoval()) {
-                                    // delete
-                                    asyncMap.remove(queueName).onComplete(dequeueStatisticAsyncResult -> {
-                                        log.debug("shared dequeue statistic for queue {} removed.", queueName);
-                                        lock.release();
-                                    });
-                                } else {
-                                    // update
-                                    asyncMap.put(queueName, dequeueStatistic).onComplete(event -> {
-                                        if (event.succeeded()) {
-                                            log.debug("shared dequeue statistic for queue {} updated.", queueName);
-                                        } else {
-                                            log.debug("shared dequeue statistic for queue {} failed to update.", queueName);
-                                        }
-                                        lock.release();
-                                    });
-                                }
-                            } else {
-                                log.debug("shared dequeue statistic for queue {} has newer data, update skipped", queueName);
+                                }).onFailure(ex -> {
+                                    log.info("shared dequeue statistic for queue {} failed to add.", queueName, ex);
+                                    lock.release();
+                                });
+                            } catch (Exception exception) {
+                                log.error("Failed to put shared dequeue statistic for queue {}.", queueName, exception);
                                 lock.release();
                             }
-                        }).onFailure(throwable -> {
+                        } else if (sharedDequeueStatistic.getLastUpdatedTimestamp() < dequeueStatistic.getLastUpdatedTimestamp()) {
+                            if (dequeueStatistic.isMarkedForRemoval()) {
+                                // delete
+                                asyncMap.remove(queueName).onComplete(dequeueStatisticAsyncResult -> {
+                                    if (dequeueStatisticAsyncResult.failed()){
+                                        throw new RuntimeException("TODO error handling", dequeueStatisticAsyncResult.cause());
+                                    }
+                                    log.debug("shared dequeue statistic for queue {} removed.", queueName);
+                                    lock.release();
+                                });
+                            } else {
+                                // update
+                                asyncMap.put(queueName, dequeueStatistic).onComplete(event -> {
+                                    if (event.succeeded()) {
+                                        log.debug("shared dequeue statistic for queue {} updated.", queueName);
+                                    } else {
+                                        log.warn("shared dequeue statistic for queue {} failed to update.", queueName, event.cause());
+                                    }
+                                    lock.release();
+                                });
+                            }
+                        } else {
+                            log.debug("shared dequeue statistic for queue {} has newer data, update skipped", queueName);
                             lock.release();
-                            log.error("Failed to get shared dequeue statistic data for queue {}.", queueName, throwable);
-                        });
-
+                        }
+                    }).onFailure(throwable -> {
+                        lock.release();
+                        log.error("Failed to get shared dequeue statistic data for queue {}.", queueName, throwable);
                     });
-                })).onFailure(throwable -> {
+
+                });
+            });
+        }).onFailure(throwable -> {
             log.error("Failed to lock dequeue statistic data for queue {}.", queueName, throwable);
         });
     }
 
     public Future<Map<String, DequeueStatistic>> getAllDequeueStatistics() {
         Promise<Map<String, DequeueStatistic>> promise = Promise.promise();
-        sharedData.getAsyncMap(DEQUEUE_STATISTIC_DATA, (Handler<AsyncResult<AsyncMap<String, DequeueStatistic>>>) asyncResult -> {
+        sharedData.<String, DequeueStatistic>getAsyncMap(DEQUEUE_STATISTIC_DATA, asyncResult -> {
             if (asyncResult.failed()) {
-                log.error("Failed to get dequeue statistic data map.", asyncResult.cause());
+                log.debug("Failed to get dequeue statistic data map.", asyncResult.cause());
                 promise.fail(asyncResult.cause());
                 return;
             }
             AsyncMap<String, DequeueStatistic> asyncMap = asyncResult.result();
             asyncMap.entries().onSuccess(promise::complete).onFailure(throwable -> {
-                log.error("Failed to get dequeue statistic map", throwable);
+                log.debug("Failed to get dequeue statistic map", throwable);
                 promise.fail(throwable);
             });
 

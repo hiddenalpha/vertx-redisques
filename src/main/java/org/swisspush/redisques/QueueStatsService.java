@@ -145,10 +145,10 @@ public class QueueStatsService {
             detailsByName.put(name, detailJson);
         }
 
-        dequeueStatisticCollector.getAllDequeueStatistics().onSuccess(event -> {
+        dequeueStatisticCollector.getAllDequeueStatistics().onSuccess(queueStatistics -> {
             for (Queue queue : req.queues) {
-                if (event.containsKey(queue.name)) {
-                    DequeueStatistic sharedDequeueStatisticCopy = event.get(queue.name);
+                DequeueStatistic sharedDequeueStatisticCopy = queueStatistics.get(queue.name);
+                if (sharedDequeueStatisticCopy != null) {
                     // Attach value of shared data
                     queue.lastDequeueAttemptEpochMs = sharedDequeueStatisticCopy.getLastDequeueAttemptTimestamp();
                     queue.lastDequeueSuccessEpochMs = sharedDequeueStatisticCopy.getLastDequeueSuccessTimestamp();
