@@ -1,5 +1,6 @@
 package org.swisspush.redisques;
 
+import com.google.common.base.Strings;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.CompositeFuture;
@@ -13,9 +14,7 @@ import io.vertx.core.eventbus.MessageConsumer;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.redis.client.Command;
-import io.vertx.redis.client.Redis;
 import io.vertx.redis.client.RedisAPI;
-import io.vertx.redis.client.Request;
 import io.vertx.redis.client.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,20 +23,7 @@ import org.swisspush.redisques.exception.RedisQuesExceptionFactory;
 import org.swisspush.redisques.handler.RedisquesHttpRequestHandler;
 import org.swisspush.redisques.performance.UpperBoundParallel;
 import org.swisspush.redisques.scheduling.PeriodicSkipScheduler;
-import org.swisspush.redisques.util.DefaultMemoryUsageProvider;
-import org.swisspush.redisques.util.DefaultRedisProvider;
-import org.swisspush.redisques.util.DefaultRedisquesConfigurationProvider;
-import org.swisspush.redisques.util.DequeueStatistic;
-import org.swisspush.redisques.util.DequeueStatisticCollector;
-import org.swisspush.redisques.util.MemoryUsageProvider;
-import org.swisspush.redisques.util.QueueActionFactory;
-import org.swisspush.redisques.util.QueueConfiguration;
-import org.swisspush.redisques.util.QueueStatisticsCollector;
-import org.swisspush.redisques.util.RedisProvider;
-import org.swisspush.redisques.util.RedisQuesTimer;
-import org.swisspush.redisques.util.RedisUtils;
-import org.swisspush.redisques.util.RedisquesConfiguration;
-import org.swisspush.redisques.util.RedisquesConfigurationProvider;
+import org.swisspush.redisques.util.*;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -230,6 +216,7 @@ public class RedisQues extends AbstractVerticle {
     private MemoryUsageProvider memoryUsageProvider;
     private QueueActionFactory queueActionFactory;
     private RedisquesConfigurationProvider configurationProvider;
+    private RedisMonitor redisMonitor;
 
     private Map<QueueOperation, QueueAction> queueActions = new HashMap<>();
 
@@ -436,6 +423,19 @@ public class RedisQues extends AbstractVerticle {
 
         registerActiveQueueRegistrationRefresh();
         registerQueueCheck();
+        registerMetricsGathering(configuration);
+    }
+
+    private void registerMetricsGathering(RedisquesConfiguration configuration){
+        String metricsAddress = configuration.getPublishMetricsAddress();
+        if(Strings.isNullOrEmpty(metricsAddress)) {
+            return;
+        }
+        String metricStorageName = configuration.getMetricStorageName();
+        int metricRefreshPeriod = configuration.getMetricRefreshPeriod();
+
+        redisMonitor = new RedisMonitor(vertx, redisProvider, metricsAddress, metricStorageName, metricRefreshPeriod);
+        redisMonitor.start();
     }
 
     private Runnable newDequeueStatisticPublisher() {
@@ -660,10 +660,9 @@ public class RedisQues extends AbstractVerticle {
 
     private void registerQueueCheck() {
         vertx.setPeriodic(configurationProvider.configuration().getCheckIntervalTimerMs(), periodicEvent -> {
-            redisProvider.connection().<Response>compose((Redis conn) -> {
+            redisProvider.redis().<Response>compose((RedisAPI redisAPI) -> {
                 int checkInterval = configurationProvider.configuration().getCheckInterval();
-                Request req = Request.cmd(Command.SET, queueCheckLastexecKey, currentTimeMillis(), "NX", "EX", checkInterval);
-                return conn.send(req);
+                return redisAPI.send(Command.SET, queueCheckLastexecKey, String.valueOf(currentTimeMillis()), "NX", "EX", String.valueOf(checkInterval));
             }).<Void>compose((Response todoExplainWhyThisIsIgnored) -> {
                 log.info("periodic queue check is triggered now");
                 return checkQueues();
@@ -685,6 +684,10 @@ public class RedisQues extends AbstractVerticle {
     @Override
     public void stop() {
         unregisterConsumers(true);
+        if(redisMonitor != null) {
+            redisMonitor.stop();
+            redisMonitor = null;
+        }
     }
 
     private void gracefulStop(final Handler<Void> doneHandler) {
