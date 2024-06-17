@@ -2,6 +2,7 @@ package org.swisspush.redisques.performance;
 
 import io.vertx.core.Vertx;
 import org.slf4j.Logger;
+import org.swisspush.redisques.exception.RedisQuesExceptionFactory;
 
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.Lock;
@@ -10,6 +11,7 @@ import java.util.function.BiConsumer;
 
 import static java.lang.Thread.currentThread;
 import static org.slf4j.LoggerFactory.getLogger;
+import static java.lang.System.currentTimeMillis;
 
 /**
  * We still can utilize parallelity without assuming an infinite amount
@@ -44,12 +46,15 @@ import static org.slf4j.LoggerFactory.getLogger;
 public class UpperBoundParallel {
 
     private static final Logger log = getLogger(UpperBoundParallel.class);
-    private static final long RETRY_DELAY_IF_LIMIT_REACHED_MS = 8;
+    private static final long RETRY_DELAY_IF_LIMIT_REACHED_MS = 100;
+    private static final int maxEmptyResumeTries = 42;
     private final Vertx vertx;
+    private final RedisQuesExceptionFactory exceptionFactory;
 
-    public UpperBoundParallel(Vertx vertx) {
+    public UpperBoundParallel(Vertx vertx, RedisQuesExceptionFactory exceptionFactory) {
         assert vertx != null;
         this.vertx = vertx;
+        this.exceptionFactory = exceptionFactory;
     }
 
     public <Ctx> void request(Semaphore limit, Ctx ctx, Mentor<Ctx> mentor) {
@@ -116,8 +121,22 @@ public class UpperBoundParallel {
             }
             assert req.numInProgress >= 0 : req.numInProgress;
             if (req.numInProgress == 0) {
-                // Looks as we could not even fire a single event. Need to try later.
-                vertx.setTimer(RETRY_DELAY_IF_LIMIT_REACHED_MS, nonsense -> resume(req));
+                // Looks as we could not even fire a single event due to no free resources.
+                req.numEmptyResumeTries += 1;
+                if (req.numEmptyResumeTries <= maxEmptyResumeTries) {
+                    // Give it another try in a moment.
+                    vertx.setTimer(RETRY_DELAY_IF_LIMIT_REACHED_MS, nonsense -> resume(req));
+                    return;
+                }
+                // Seems as we won't get any resources not sooner, and probably also not
+                // later. Therefore report it as an error and stop trying.
+                long durationMs = currentTimeMillis() - req.beginOfRequestEpchMs;
+                req.isFatalError = true;
+                Exception ex = exceptionFactory.newException(""
+                    + "Failed to get any resources. Even after trying " + req.numEmptyResumeTries
+                    + " times within " + durationMs + "ms.");
+                req.mentor.onError(ex, req.ctx);
+                return;
             }
         } finally {
             req.worker = null;
@@ -156,11 +175,13 @@ public class UpperBoundParallel {
         private final Mentor<Ctx> mentor;
         private final Lock lock = new ReentrantLock();
         private final Semaphore limit;
+        private final long beginOfRequestEpchMs = currentTimeMillis();
         private Thread worker = null;
         private int numInProgress = 0;
         private boolean hasMore = true;
         private boolean isFatalError = false;
         private boolean isDoneCalled = false;
+        private int numEmptyResumeTries = 0;
 
         private Request(Ctx ctx, Mentor<Ctx> mentor, Semaphore limit) {
             this.ctx = ctx;
