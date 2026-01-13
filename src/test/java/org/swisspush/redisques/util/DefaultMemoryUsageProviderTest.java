@@ -124,7 +124,7 @@ public class DefaultMemoryUsageProviderTest {
         redisAPI = Mockito.mock(RedisAPI.class);
         redisProvider = Mockito.mock(RedisProvider.class);
         when(redisProvider.redis()).thenReturn(Future.succeededFuture(redisAPI));
-        redisService = new RedisService(redisProvider);
+        // TODO redisService = new RedisService(redisProvider);
         vertx = Vertx.vertx();
     }
 

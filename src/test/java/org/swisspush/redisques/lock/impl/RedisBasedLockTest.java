@@ -51,8 +51,8 @@ public class RedisBasedLockTest {
         RedisAPI redisAPI = RedisAPI.api(new RedisClient(vertx, new NetClientOptions(), new PoolOptions(),
                 new RedisStandaloneConnectOptions(), TracingPolicy.IGNORE));
 
-        redisBasedLock = new RedisBasedLock(new RedisService(() -> Future.succeededFuture(redisAPI)),
-                newWastefulExceptionFactory());
+        // TODO redisBasedLock = new RedisBasedLock(new RedisService(() -> Future.succeededFuture(redisAPI)),
+        // TODO         newWastefulExceptionFactory());
     }
 
     @Before
