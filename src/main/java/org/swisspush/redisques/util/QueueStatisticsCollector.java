@@ -140,6 +140,23 @@ public class QueueStatisticsCollector {
     }
 
     /**
+     * Same as {@link #resetQueueFailureStatistics(String, BiConsumer)} but
+     * using {@link Future} API.
+     */
+    public Future<Void> resetQueueFailureStatistics(String queueName) {
+        var p = Promise.<Void>promise();
+        try {
+            resetQueueFailureStatistics(queueName, (Throwable ex, Void nil) -> {
+                if (ex != null) p.tryFail(ex);
+                else p.tryComplete(nil);
+            });
+        } catch (RuntimeException ex) {
+            p.tryFail(ex);
+        }
+        return p.future();
+    }
+
+    /**
      * Does reset all failure statistics values of the given queue. In memory but as well the persisted
      * ones in redis.
      * <p>

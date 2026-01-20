@@ -1,6 +1,5 @@
 package org.swisspush.redisques.queue;
 
-import io.micrometer.common.util.StringUtils;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.CompositeFuture;
 import io.vertx.core.Future;
@@ -16,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.swisspush.redisques.QueueState;
 import org.swisspush.redisques.QueueStatsService;
 import org.swisspush.redisques.exception.RedisQuesExceptionFactory;
+import org.swisspush.redisques.foo.RedisQuesGroupExecutor;
 import org.swisspush.redisques.performance.UpperBoundParallel;
 import org.swisspush.redisques.scheduling.PeriodicSkipScheduler;
 import org.swisspush.redisques.util.QueueStatisticsCollector;
@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +43,8 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static java.lang.System.currentTimeMillis;
+import static io.vertx.core.Future.succeededFuture;
+import static io.vertx.core.Future.failedFuture;
 
 public class QueueRegistryService {
     private static final Logger log = LoggerFactory.getLogger(QueueRegistryService.class);
@@ -287,6 +290,19 @@ public class QueueRegistryService {
         return redisService.setNxPx(queueName, uid, true, 1000L * consumerLockTime);
     }
 
+    public Future<Response> refreshRegistration(String queueName) {
+        var p = Promise.<Response>promise();
+        try {
+            refreshRegistration(queueName, (AsyncResult<Response> ev) -> {
+                if (ev.failed()) p.tryFail(ev.cause());
+                else p.tryComplete(ev.result());
+            });
+        } catch (RuntimeException ex) {
+            p.tryFail(ex);
+        }
+        return p.future();
+    }
+
     public void refreshRegistration(String queueName, Handler<AsyncResult<Response>> handler) {
         log.debug("RedisQues Refreshing registration of queue consumer {}, expire in {} s", queueName, consumerLockTime);
         String consumerKey = keyspaceHelper.getConsumersPrefix() + queueName;
@@ -324,51 +340,72 @@ public class QueueRegistryService {
         // Periodic refresh of my registrations on active queues.
         var periodMs = getConfiguration().getRefreshPeriod() * 1000L;
         periodicSkipScheduler.setPeriodic(periodMs, "registerActiveQueueRegistrationRefresh", new Consumer<Runnable>() {
-            Iterator<Map.Entry<String, QueueProcessingState>> iter;
 
             @Override
             public void accept(Runnable onPeriodicDone) {
                 // Need a copy to prevent concurrent modification issuses.
-                iter = getSortedMyQueueClone(queueConsumerRunner.getMyQueues()).entrySet().iterator();
-                // Trigger only a limited amount of requests in parallel.
-                upperBoundParallel.request(activeQueueRegRefreshReqQuota, iter, new UpperBoundParallel.Mentor<>() {
-                    @Override
-                    public boolean runOneMore(BiConsumer<Throwable, Void> onQueueDone, Iterator<Map.Entry<String, QueueProcessingState>> iter) {
-                        refreshConsumerRegistration(onQueueDone);
-                        return iter.hasNext();
+                Map<String, QueueProcessingState> cpy;
+                cpy = getSortedMyQueueClone(queueConsumerRunner.getMyQueues());
+                Future.<Void>succeededFuture().<List<Future<Void>>>compose((Void nil) -> {
+                    /* setup the giant army of tasks we wanna execute */
+                    var tasks = new ArrayList<Callable<Future<Void>>>(cpy.size());
+                    for (var e : cpy.entrySet()) {
+                        String queueName = e.getKey();
+                        QueueProcessingState qpState = e.getValue();
+                        QueueState qState = qpState.getState();
+                        if (qState != QueueState.CONSUMING) {
+                            log.trace("nothing to be done as state is '{}' for '{}'", qState, queueName);
+                            continue;
+                        }
+                        /* add this one to the list to be processed */
+                        tasks.add(() -> refreshConsumerRegistration(queueName, qpState));
                     }
-
-                    @Override
-                    public boolean onError(Throwable ex, Iterator<Map.Entry<String, QueueProcessingState>> iter) {
-                        if (log.isWarnEnabled()) log.warn("TODO error handling", exceptionFactory.newException(ex));
-                        onPeriodicDone.run();
-                        // just continue to refresh next one
-                        return true;
+                    RedisQuesGroupExecutor executor = null/*TODO*/;
+                    /* fire-off all those tasks now. The idea is that the executor handles
+                     * the concurrency limits internally. */
+                    return executor.executeDespiteFail(tasks.iterator());
+                }).<Void>compose((List<Future<Void>> ev) -> {
+                    /* all async tasks done */
+                    int numOk = 0, numFail = 0;
+                    for (Future<Void> fut : ev) {
+                        if (fut.failed()) {
+                            Throwable ex = fut.cause();
+                            log.warn("{}", ex.getMessage(), log.isDebugEnabled() ? ex : null);
+                            numFail += 1;
+                            continue;
+                        }
+                        numOk += 1;
                     }
-
-                    @Override
-                    public void onDone(Iterator<Map.Entry<String, QueueProcessingState>> iter) {
-                        onPeriodicDone.run();
+                    if (numFail > 0) {
+                        log.warn("{} out of {} have failed", numFail, numOk + numFail);
                     }
+                    return Future.<Void>succeededFuture();
+                }).recover((Throwable ex) -> {
+                    log.error("TODO_q39i8huwito: {}", ex.getMessage(), log.isDebugEnabled() ? ex : null);
+                    return Promise.<Void>promise().future(); /* <- aka NEVER-resolving-future */
                 });
             }
 
-            void refreshConsumerRegistration(BiConsumer<Throwable, Void> onQueueDone) {
-                while (iter.hasNext()) {
-                    var entry = iter.next();
-                    var state = entry.getValue().getState();
-                    if (state != QueueState.CONSUMING) {
-                        log.trace("nothing to be done for this entry because state is: {}", state);
-                        continue;
-                    }
-                    /* MUST only trigger *ONE* entry, with that call, we do exactly this. We
-                     * also delegate the `onDone()` callback to our callee, so we also are NOT
-                     * responsible to call that anymore ourself, therefore we're ready to return. */
-                    checkIfImStillTheRegisteredConsumer(entry.getKey(), onQueueDone);
+            Future<Void> refreshConsumerRegistration(String queueName, QueueProcessingState v) {
+                var p = Promise.<Void>promise();
+                refreshConsumerRegistration(queueName, v, (Throwable ex, Void nil) -> {
+                    if (ex != null) p.tryFail(ex);
+                    else p.tryComplete(nil);
+                });
+                return p.future();
+            }
+
+            void refreshConsumerRegistration(String queueName, QueueProcessingState qpState, BiConsumer<Throwable, Void> onQueueDone) {
+                var state = qpState.getState();
+                if (state != QueueState.CONSUMING) {
+                    log.warn("TODO_9873qz9wtuhg: unreachable code reached: {}", state);
+                    onQueueDone.accept(null, null);
                     return;
                 }
-                /* did NOT trigger any entry above. So we MUST signal the completion ourself. */
-                onQueueDone.accept(null, null);
+                /* MUST only trigger *ONE* entry, with that call, we do exactly this. We
+                 * also delegate the `onDone()` callback to our callee, so we also are NOT
+                 * responsible to call that anymore ourself. */
+                checkIfImStillTheRegisteredConsumer(queueName, onQueueDone);
             }
 
             void checkIfImStillTheRegisteredConsumer(String queue, BiConsumer<Throwable, Void> onDone) {

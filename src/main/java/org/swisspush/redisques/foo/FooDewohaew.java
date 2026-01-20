@@ -117,6 +117,7 @@ public interface FooDewohaew {
         Consumer<RedisAccessMetric> metricObserver;
         HashMap<String, PerCmd> currentMetricsByCmd;
         long metricPeriodEndNs, metricPeriodBeginNs;
+        var newMap = new HashMap<String, PerCmd>(32);
 
         that.mutx.lock();
         try {
@@ -130,7 +131,8 @@ public interface FooDewohaew {
             metricPeriodBeginNs = that.metricPeriodBeginNs;
             /* update state where needed, to prepare next measuring period */
             that.metricPeriodBeginNs = metricPeriodEndNs;
-            that.currentMetricsByCmd = new HashMap<>(32);
+            that.currentMetricsByCmd = newMap;
+            newMap = null;
         } finally {
             that.mutx.unlock();
         }

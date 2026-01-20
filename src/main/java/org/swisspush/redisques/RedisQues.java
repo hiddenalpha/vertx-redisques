@@ -24,7 +24,6 @@ import org.swisspush.redisques.util.*;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 
-import static io.vertx.core.Future.succeededFuture;
 import static org.swisspush.redisques.exception.RedisQuesExceptionFactory.newThriftyExceptionFactory;
 import static org.swisspush.redisques.util.RedisquesAPI.*;
 

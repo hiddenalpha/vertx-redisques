@@ -1,11 +1,13 @@
 package org.swisspush.redisques.scheduling;
 
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import org.slf4j.Logger;
 
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static java.lang.System.currentTimeMillis;
 import static org.slf4j.LoggerFactory.getLogger;
