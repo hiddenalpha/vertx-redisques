@@ -1,28 +1,28 @@
 package org.swisspush.redisques.exception;
 
 /**
- * Basically same as in vertx, But adding the forgotten contructors.
+ * Basically same as in vertx, But adding forgotten constructors.
  */
 public class NoStacktraceException extends RuntimeException {
 
     public NoStacktraceException() {
+        this(null, null, false);
     }
 
     public NoStacktraceException(String message) {
-        super(message);
+        this(message, null, false);
     }
 
     public NoStacktraceException(String message, Throwable cause) {
-        super(message, cause);
+        this(message, cause, false);
     }
 
     public NoStacktraceException(Throwable cause) {
-        super(cause);
+        this(null, cause, false);
     }
 
-    @Override
-    public Throwable fillInStackTrace() {
-        return this;
+    public NoStacktraceException(String message, Throwable cause, boolean withStacktrace) {
+        super(message, cause, true, withStacktrace);
     }
 
 }
