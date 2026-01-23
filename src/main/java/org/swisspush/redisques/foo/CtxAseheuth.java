@@ -11,7 +11,7 @@ import java.util.function.Supplier;
 
 public class CtxAseheuth {
 
-    RedisQuesGroupExecutor executor;
+    RedisQuesGroupedExecutor executor;
     RedisAPI redis;
     PeriodicSkipScheduler periodicSkipScheduler;
     Supplier<Map<String, QueueProcessingState>> getQueues;

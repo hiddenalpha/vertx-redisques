@@ -21,11 +21,16 @@ import javax.annotation.Nullable;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Executor;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -389,6 +394,75 @@ public interface FooDewohaew {
             getQueueConsumerRunner().updateLastRefreshRegistrationTimeStamp(queueName);
         });
     }
+
+
+    public static RedisQuesGroupedExecutor newkRedisQuesGroupedExecutor(
+            Executor delegate
+    ) {
+        var that = new Cls3oteiuha();
+        that.delegate = delegate;
+        that.numTasksMax = 4;
+        return new RedisQuesGroupedExecutor() {
+            Executor executor = new Executor() {
+                @Override public void execute(Runnable task) {
+                    execute_(that, task);
+                }
+            };
+            @Override public Executor asExecutor() {
+                return executor;
+            }
+            @Override public <T> Future<Collection<Future<T>>> executeUntilFail(Iterator<Callable<Future<T>>> tasks) {
+                return executeUntilFail_(that, tasks);
+            }
+            @Override public <T> Future<Collection<Future<T>>> executeDespiteFail(Iterator<Callable<Future<T>>> tasks) {
+                return executeDespiteFail_(that, tasks);
+            }
+        };
+    }
+
+
+    static class Cls3oteiuha {
+        private final ReentrantLock mutx = new ReentrantLock();
+        private Executor delegate;
+        private int numTasksMax;
+        private int numTasksRunning;
+        private int iSrc = 0;
+        private final ArrayList<Iterator<Callable<Future<T>>>> tasks = new ArrayList<>();
+    }
+
+
+    static void execute_(Cls3oteiuha that, Runnable task) {
+        assert that != null;
+        assert task != null;
+        that.mutx.lock();
+        try {
+            that.tasks.add(task);
+        } finally {
+            that.mutx.unlock();
+        }
+        tryFireOneMore();
+    }
+
+
+    static <T> Future<Collection<Future<T>>> executeUntilFail_(Cls3oteiuha that, Iterator<Callable<Future<T>>> tasks) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+
+    static <T> Future<Collection<Future<T>>> executeDespiteFail_(Cls3oteiuha that, Iterator<Callable<Future<T>>> tasks) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+
+    static void tryFireOneMore(Cls3oteiuha that) {
+        that.mutx.lock();
+        try {
+            asdlfkasdfas;
+        } finally {
+            that.mutx.unlock();
+        }
+    }
+
 
 
 }
